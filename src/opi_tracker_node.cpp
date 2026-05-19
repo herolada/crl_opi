@@ -156,8 +156,8 @@ void OpiTrackerNode::publishMarkers(const rclcpp::Time & stamp)
     sphere.pose.position.y = hyp.centroid.y();
     sphere.pose.position.z = hyp.centroid.z();
     sphere.pose.orientation.w = 1.0;
-    sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.25;
-    sphere.color.r = 1.0f; sphere.color.g = 0.5f; sphere.color.b = 0.0f;
+    sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.5;
+    sphere.color.r = 0.74f; sphere.color.g = 0.25f; sphere.color.b = 0.74f;
     sphere.color.a = 0.9f;
     sphere.lifetime = rclcpp::Duration(0, 0);  // persist until deleted
 
@@ -169,9 +169,9 @@ void OpiTrackerNode::publishMarkers(const rclcpp::Time & stamp)
     text.type          = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
     text.action        = visualization_msgs::msg::Marker::ADD;
     text.pose          = sphere.pose;
-    text.pose.position.z += 0.3;
-    text.scale.z       = 0.20;
-    text.color.r = text.color.g = text.color.b = 1.0f;
+    text.pose.position.z += 0.6;
+    text.scale.z       = 0.40;
+    text.color.r = text.color.g = text.color.b = 0.16f;
     text.color.a = 1.0f;
     std::ostringstream ss;
     ss << "OPI #" << id << "\n(n=" << hyp.count << ")";

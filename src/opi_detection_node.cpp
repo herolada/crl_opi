@@ -232,10 +232,13 @@ void OpiDetectionNode::imageCallback(
     int x1 = det.x - det.w / 2,  y1 = det.y - det.h / 2;
     int x2 = det.x + det.w / 2,  y2 = det.y + det.h / 2;
 
-    cv::rectangle(image, {x1, y1}, {x2, y2}, {0, 255, 0}, 2);
+    cv::rectangle(image, {x1, y1}, {x2, y2}, {0, 0, 255}, 2);
 
-    const std::string label = classLabel(det.class_id);
-    cv::putText(image, label, {x1, y1 - 8}, cv::FONT_HERSHEY_SIMPLEX, 0.6, {0, 255, 0}, 2);
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(2) << det.confidence;
+    const std::string label = ss.str();
+
+    cv::putText(image, label, {x1, y1 - 8}, cv::FONT_HERSHEY_SIMPLEX, 1.6, {0, 0, 255}, 3.3);
   }
 
   bbox_pub_->publish(bbox_array);

@@ -25,7 +25,7 @@ def generate_launch_description():
             parameters=[{
                 "model_path": get_package_share_directory("crl_opi")+"/models/yolov11s.onnx",
                 "camera_topics": ["camera/image_raw"],
-                "conf_threshold": 0.40,
+                "conf_threshold": 0.10,
                 "nms_threshold": 0.45,
                 "input_width": 640,
                 "input_height": 640,
@@ -45,7 +45,7 @@ def generate_launch_description():
             parameters=[{
                 "placard_width_m": 0.40,
                 "placard_height_m": 0.30,
-                "map_frame": "map",
+                "map_frame": "local_odom",
                 "camera_frame": "oak_rgb_camera_optical_frame",
                 "camera_info_topic": "camera/camera_info",
                 "bbox_topic": "opi/detections",
@@ -66,7 +66,7 @@ def generate_launch_description():
                 "cluster_radius_m": 5.0,
                 "min_count": 5,
                 "prune_timeout_s": 60.0, # not used
-                "map_frame": "map",
+                "map_frame": "local_odom",
                 "publish_hz": 2.0,
                 "input_topic": "opi/positions_raw",
                 "output_topic": "opi/hypotheses",
