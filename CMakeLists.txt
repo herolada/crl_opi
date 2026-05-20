@@ -7,6 +7,7 @@ endif()
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(vision_msgs REQUIRED)
@@ -21,6 +22,11 @@ find_package(Eigen3 REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/TrackedPose.msg"
+  "msg/TrackedPoseArray.msg"
+  DEPENDENCIES geometry_msgs std_msgs
+)
 
 # ONNX Runtime – adjust ONNXRUNTIME_ROOT if installed elsewhere
 set(ONNXRUNTIME_ROOT "/opt/onnxruntime")
@@ -86,10 +92,17 @@ target_include_directories(opi_tracker_node PRIVATE
  
 ament_target_dependencies(opi_tracker_node
   rclcpp
+  cv_bridge
   geometry_msgs
+  nav_msgs
+  tf2_ros
+  tf2_geometry_msgs
   visualization_msgs
   std_msgs
 )
+
+rosidl_target_interfaces(opi_tracker_node
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 
 install(TARGETS opi_detection_node 
@@ -98,5 +111,7 @@ install(TARGETS opi_detection_node
         DESTINATION lib/${PROJECT_NAME})
         
 install(DIRECTORY launch models DESTINATION share/${PROJECT_NAME} OPTIONAL)
+
+ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()

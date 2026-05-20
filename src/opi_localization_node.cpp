@@ -59,6 +59,8 @@ void OpiLocalizationNode::cameraInfoCallback(
 {
   if (camera_info_received_) return;  // only need it once (or re-update on change)
 
+  camera_frame_ = msg->header.frame_id;
+
   camera_matrix_ = (cv::Mat_<double>(3, 3) <<
     msg->k[0], msg->k[1], msg->k[2],
     msg->k[3], msg->k[4], msg->k[5],

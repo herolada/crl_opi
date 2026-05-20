@@ -25,7 +25,7 @@ def generate_launch_description():
             parameters=[{
                 "model_path": get_package_share_directory("crl_opi")+"/models/yolov11s.onnx",
                 "camera_topics": ["camera/image_raw"],
-                "conf_threshold": 0.10,
+                "conf_threshold": 0.40,
                 "nms_threshold": 0.45,
                 "input_width": 640,
                 "input_height": 640,
@@ -33,8 +33,8 @@ def generate_launch_description():
                 "output_topic": "opi/detections",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
-                ("camera/image_raw", "/luxonis/oak/rgb/image_raw"),
-                ("camera/camera_info", "/luxonis/oak/rgb/camera_info"),
+                ("camera/image_raw", "/basler_front/image_raw"),
+                ("camera/camera_info", "/basler_front/camera_info"),
             ],
         ),
         Node(
@@ -45,14 +45,14 @@ def generate_launch_description():
             parameters=[{
                 "placard_width_m": 0.40,
                 "placard_height_m": 0.30,
-                "map_frame": "local_odom",
-                "camera_frame": "oak_rgb_camera_optical_frame",
+                "map_frame": "map",
+                "camera_frame": "pylon_camera",
                 "camera_info_topic": "camera/camera_info",
                 "bbox_topic": "opi/detections",
                 "output_topic": "opi/positions_raw",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
-                ("camera/camera_info", "/luxonis/oak/rgb/camera_info"),
+                ("camera/camera_info", "/basler_front/camera_info"),
                 ("opi/detections", "/opi/detections"),
                 ("opi/positions_raw", "/opi/positions_raw"),
             ],
@@ -66,11 +66,15 @@ def generate_launch_description():
                 "cluster_radius_m": 5.0,
                 "min_count": 5,
                 "prune_timeout_s": 60.0, # not used
-                "map_frame": "local_odom",
+                "map_frame": "map",
                 "publish_hz": 2.0,
                 "input_topic": "opi/positions_raw",
-                "output_topic": "opi/hypotheses",
+                "tracked_topic": "opi/tracked",
+                "goals_topic": "opi/goals",
                 "marker_topic": "opi/markers",
+                "odom_topic": "/liorf/mapping/baselink_odometry",
+                "image_topic": "/luxonis/oak/rgb/image_raw",
+                "img_save_path": "~/opi_images/",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
                 ("opi/positions_raw", "/opi/positions_raw"),

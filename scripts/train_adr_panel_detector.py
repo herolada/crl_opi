@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch", type=int, default=8, help="Batch size.")
     parser.add_argument("--device", default="0", help='Training device, e.g. "0", "0,1", or "cpu".')
     parser.add_argument("--workers", type=int, default=8, help="Data loader workers.")
-    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience.")
+    parser.add_argument("--patience", type=int, default=20, help="Early stopping patience.")
     parser.add_argument(
         "--project",
         type=Path,
@@ -317,8 +317,10 @@ def training_overrides(args: argparse.Namespace) -> dict:
         "exist_ok": True,
         "pretrained": True,
         "optimizer": "AdamW",
-        "lr0": 0.0002,
-        "lrf": 0.001,
+        "lr0": 0.001,
+        "lrf": 0.01,
+        "cos_lr": True,        # cosine LR schedule
+        "weight_decay": 0.001,
         "hsv_h": 0.7,
         "hsv_s": 0.7,
         "hsv_v": 0.9,
@@ -331,7 +333,7 @@ def training_overrides(args: argparse.Namespace) -> dict:
         "fliplr": 0.5,
         "bgr": 0.0,
         "mosaic": 0.5,
-        "mixup": 0.0,
+        "mixup": 0.1,
         "copy_paste": 0.0,
         "copy_paste_mode": "flip",
         "auto_augment": "randaugment",
