@@ -15,7 +15,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "rotate_image_180",
-            default_value="false",
+            default_value="true",
             description="Rotate the subscribed image by 180 degrees before detection",
         )
     ]
@@ -69,7 +69,8 @@ def generate_launch_description():
             name="opi_tracker_node",
             output="screen",
             parameters=[{
-                "cluster_radius_m": 5.0,
+                "opi_reached_distance": 1.0,
+                "cluster_radius_m": 3.0,
                 "min_count": 5,
                 "prune_timeout_s": 60.0, # not used
                 "map_frame": "map",
@@ -79,12 +80,13 @@ def generate_launch_description():
                 "goals_topic": "opi/goals",
                 "marker_topic": "opi/markers",
                 "odom_topic": "/liorf/mapping/baselink_odometry",
-                "image_topic": "/luxonis/oak/rgb/image_raw",
-                "img_save_path": "~/opi_images/",
+                "image_topic": "/basler_front/image_color",
+                "img_save_path": "/home/robot/opi_images/",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
                 ("opi/positions_raw", "/opi/positions_raw"),
-                ("opi/hypotheses", "/opi/hypotheses"),
+                ("opi/goals", "/opi/goals"),
+                ("opi/tracked", "/opi/tracked"),
                 ("opi/markers", "/opi/markers"),
             ],
         )]

@@ -8,6 +8,10 @@
 #include <opencv2/imgcodecs.hpp>
 #include <rclcpp/wait_for_message.hpp>
 
+#include <sys/stat.h>
+#include <sys/types.h>
+#define MKDIR(path) mkdir(path, 0755)
+
 namespace opi_tracker
 {
 
@@ -30,6 +34,7 @@ OpiTrackerNode::OpiTrackerNode(const rclcpp::NodeOptions & options)
   std::string odom_topic  = declare_parameter<std::string>("odom_topic", "/odom");
   image_topic_  = declare_parameter("image_topic", "/luxonis/oak/rgb/image_raw");
   img_save_path_ = declare_parameter("img_save_path", "~/opi_images/");
+  MKDIR(img_save_path_.c_str());
 
   // ── TF ──────────────────────────────────────────────────────────────────
   tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -200,6 +205,7 @@ void OpiTrackerNode::takePhoto(int id)
     RCLCPP_INFO(get_logger(), "Sucessfully taken photo of OPI %d!", id);
   } else {
     RCLCPP_WARN(get_logger(), "Failed to take photo of the OPI! wait_for_msg did not receive a msg in %ld s",timeout.count());
+    return;
   }
 
   // save the photo to a file
@@ -210,10 +216,16 @@ void OpiTrackerNode::takePhoto(int id)
     return;
   }
 
-  std::filesystem::path save_path =
-    std::filesystem::path(img_save_path_) /
-    ("OPI_" + std::to_string(id) + ".png");
-  cv::imwrite(save_path.string(), cv_img->image);
+  std::string separator =
+    (!img_save_path_.empty() &&
+     img_save_path_.back() != '/' &&
+     img_save_path_.back() != '\\')
+        ? "/"
+        : "";
+
+  std::string save_path =
+      img_save_path_ + separator + "OPI_" + std::to_string(id) + ".png";
+  cv::imwrite(save_path, cv_img->image);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
