@@ -22,6 +22,7 @@ OpiDetectionNode::OpiDetectionNode(const rclcpp::NodeOptions & options)
   nms_threshold_  = static_cast<float>(declare_parameter<double>("nms_threshold",  0.45));
   input_width_    = declare_parameter<int>("input_width",  640);
   input_height_   = declare_parameter<int>("input_height", 640);
+  rotate_image_180_ = declare_parameter<bool>("rotate_image_180", false);
 
   std::string camera_info_topic =
     declare_parameter<std::string>("camera_info_topic", "luxonis/oak/rgb/camera_info");
@@ -188,6 +189,10 @@ void OpiDetectionNode::imageCallback(
   } catch (const cv_bridge::Exception & e) {
     RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
     return;
+  }
+
+  if (rotate_image_180_) {
+    cv::rotate(image, image, cv::ROTATE_180);
   }
 
   float scale_x, scale_y;

@@ -40,6 +40,7 @@ private:
   float nms_threshold_;
   int   input_width_;
   int   input_height_;
+  bool  rotate_image_180_;
 
   // ── ONNX Runtime ──────────────────────────────────────────────────────────
   Ort::Env                             ort_env_;

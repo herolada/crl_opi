@@ -12,6 +12,11 @@ def generate_launch_description():
             "use_sim_time",
             default_value="false",
             description="simulation/bag or not",
+        ),
+        DeclareLaunchArgument(
+            "rotate_image_180",
+            default_value="false",
+            description="Rotate the subscribed image by 180 degrees before detection",
         )
     ]
 
@@ -29,6 +34,7 @@ def generate_launch_description():
                 "nms_threshold": 0.45,
                 "input_width": 640,
                 "input_height": 640,
+                "rotate_image_180": LaunchConfiguration("rotate_image_180"),
                 "camera_info_topic": "camera/camera_info",
                 "output_topic": "opi/detections",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
