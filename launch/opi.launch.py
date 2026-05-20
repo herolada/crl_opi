@@ -69,8 +69,8 @@ def generate_launch_description():
             name="opi_tracker_node",
             output="screen",
             parameters=[{
-                "opi_reached_distance": 1.0,
-                "cluster_radius_m": 3.0,
+                "opi_reached_distance": 3.0,
+                "cluster_radius_m": 5.0,
                 "min_count": 5,
                 "prune_timeout_s": 60.0, # not used
                 "map_frame": "map",

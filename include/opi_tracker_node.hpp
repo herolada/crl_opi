@@ -30,6 +30,7 @@ struct OpiHypothesis
   Eigen::Vector3d centroid;       // running mean of all assigned measurements [m]
   uint32_t        count{0};       // number of measurements assigned so far
   rclcpp::Time    last_seen;      // stamp of the most recently assigned measurement
+  std::string     frame;
   bool            visited{false}; // true once the robot has reached this OPI
 };
 
@@ -80,7 +81,7 @@ private:
 
   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  void takePhoto(int id);
+  void takePhoto(int id, std::string specifier);
 
   // Find the nearest hypothesis to a measurement.
   // Returns pointer (non-owning) or nullptr if none within cluster_radius_m_.

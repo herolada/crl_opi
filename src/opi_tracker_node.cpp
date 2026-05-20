@@ -128,9 +128,11 @@ void OpiTrackerNode::positionsCallback(
       new_hyp.centroid  = meas;
       new_hyp.count     = 1;
       new_hyp.last_seen = stamp;
+      new_hyp.frame     = msg->header.frame_id;
       hypotheses_[new_hyp.id] = new_hyp;
       RCLCPP_INFO(get_logger(), "New OPI hypothesis id=%u at [%.2f, %.2f, %.2f]",
                   new_hyp.id, meas.x(), meas.y(), meas.z());
+      takePhoto(new_hyp.id, "new");
     }
 
     if (hyp == nullptr) {
@@ -147,7 +149,6 @@ void OpiTrackerNode::positionsCallback(
           get_logger(),
           "Marked OPI hypothesis id=%u visited at XY distance %.2f m",
           hyp->id, distance_xy);
-        takePhoto(hyp->id);
       }
     }
   }
@@ -159,6 +160,41 @@ void OpiTrackerNode::odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr 
   latest_robot_pose_.header = msg->header;
   latest_robot_pose_.pose = msg->pose.pose;
   have_robot_pose_ = true;
+
+  geometry_msgs::msg::PoseStamped robot_pose_transformed;
+
+  for (auto & [id,hyp] : hypotheses_) {
+
+    bool can_check_visited = true;
+
+    if (robot_pose_transformed == geometry_msgs::msg::PoseStamped() || robot_pose_transformed.header.frame_id != hyp.frame) {
+
+      rclcpp::Time stamp(msg->header.stamp);
+      can_check_visited =
+        have_robot_pose_ && getRobotPoseInFrame(hyp.frame, stamp, robot_pose_transformed);
+
+    }
+      
+    if (can_check_visited && !hyp.visited) {
+      const double dx = hyp.centroid.x() - robot_pose_transformed.pose.position.x;
+      const double dy = hyp.centroid.y() - robot_pose_transformed.pose.position.y;
+      const double distance_xy = std::hypot(dx, dy);
+
+      if (distance_xy <= opi_reached_distance_) {
+        hyp.visited = true;
+        RCLCPP_INFO(
+          get_logger(),
+          "Marked OPI hypothesis id=%u visited at XY distance %.2f m",
+          hyp.id, distance_xy);
+        takePhoto(hyp.id, "closeup");
+      } else {
+        RCLCPP_INFO(
+          get_logger(),
+          "OPI too far id=%u at XY distance %.2f m",
+          hyp.id, distance_xy);
+      }
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -195,7 +231,7 @@ void OpiTrackerNode::publishTimerCallback()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void OpiTrackerNode::takePhoto(int id)
+void OpiTrackerNode::takePhoto(int id, std::string specifier)
 {
   RCLCPP_INFO(get_logger(), "Trying to take a photo of OPI %d.", id);
   sensor_msgs::msg::Image img_msg; 
@@ -224,7 +260,7 @@ void OpiTrackerNode::takePhoto(int id)
         : "";
 
   std::string save_path =
-      img_save_path_ + separator + "OPI_" + std::to_string(id) + ".png";
+      img_save_path_ + separator + "OPI_" + std::to_string(id) + "_" + specifier + ".png";
   cv::imwrite(save_path, cv_img->image);
 }
 
