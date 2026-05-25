@@ -1,6 +1,5 @@
 def main():
-    print("Hello from scripts!")
-
+    pass
 
 if __name__ == "__main__":
     main()
