@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <string>
+#include <chrono>
+#include <unordered_map>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -41,6 +43,9 @@ private:
   int   input_width_;
   int   input_height_;
   bool  rotate_image_180_;
+  double detection_hz_;
+  bool  enable_openvino_ep_;
+  std::chrono::steady_clock::duration detection_period_;
 
   // ── ONNX Runtime ──────────────────────────────────────────────────────────
   Ort::Env                             ort_env_;
@@ -52,6 +57,7 @@ private:
   std::vector<const char *>            input_names_;
   std::vector<const char *>            output_names_;
   std::vector<int64_t>                 input_shape_;
+  std::vector<float>                   input_buffer_;
 
   // ── ROS I/O ───────────────────────────────────────────────────────────────
   // One subscriber per camera topic (stored so they are not destroyed)
@@ -59,6 +65,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr         camera_info_sub_;
   rclcpp::Publisher<vision_msgs::msg::BoundingBox2DArray>::SharedPtr    bbox_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr                 bbox_img_pub_;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_detection_time_;
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   void loadModel();

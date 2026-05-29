@@ -17,7 +17,17 @@ def generate_launch_description():
             "rotate_image_180",
             default_value="true",
             description="Rotate the subscribed image by 180 degrees before detection",
-        )
+        ),
+        DeclareLaunchArgument(
+            "detection_hz",
+            default_value="0.0",
+            description="Maximum object detection frequency per subscribed camera topic; 0.0 processes every frame",
+        ),
+        DeclareLaunchArgument(
+            "enable_openvino_ep",
+            default_value="true",
+            description="Try to enable the OpenVINO execution provider if the linked ONNX Runtime build supports it",
+        ),
     ]
 
     return LaunchDescription(
@@ -27,6 +37,7 @@ def generate_launch_description():
             executable="opi_detection_node",
             name="opi_detection_node",
             output="screen",
+            # prefix=['valgrind --tool=callgrind --dump-instr=yes -v --instr-atstart=no'],
             parameters=[{
                 "model_path": get_package_share_directory("crl_opi")+"/models/yolov11s.onnx",
                 "camera_topics": ["camera/image_raw"],
@@ -35,6 +46,8 @@ def generate_launch_description():
                 "input_width": 640,
                 "input_height": 640,
                 "rotate_image_180": LaunchConfiguration("rotate_image_180"),
+                "detection_hz": LaunchConfiguration("detection_hz"),
+                "enable_openvino_ep": LaunchConfiguration("enable_openvino_ep"),
                 "camera_info_topic": "camera/camera_info",
                 "output_topic": "opi/detections",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],

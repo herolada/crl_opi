@@ -1,6 +1,7 @@
 #include "opi_detection_node.hpp"
 
 #include <algorithm>
+#include <iomanip>
 #include <numeric>
 #include <stdexcept>
 
@@ -23,6 +24,15 @@ OpiDetectionNode::OpiDetectionNode(const rclcpp::NodeOptions & options)
   input_width_    = declare_parameter<int>("input_width",  640);
   input_height_   = declare_parameter<int>("input_height", 640);
   rotate_image_180_ = declare_parameter<bool>("rotate_image_180", false);
+  detection_hz_   = declare_parameter<double>("detection_hz", 0.0);
+  enable_openvino_ep_ = declare_parameter<bool>("enable_openvino_ep", true);
+
+  if (detection_hz_ > 0.0) {
+    detection_period_ = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / detection_hz_));
+  } else {
+    detection_period_ = std::chrono::steady_clock::duration::zero();
+  }
 
   std::string camera_info_topic =
     declare_parameter<std::string>("camera_info_topic", "luxonis/oak/rgb/camera_info");
@@ -55,6 +65,11 @@ OpiDetectionNode::OpiDetectionNode(const rclcpp::NodeOptions & options)
     output_topic + "/image_raw", rclcpp::SystemDefaultsQoS());
 
   RCLCPP_INFO(get_logger(), "OPI detection node ready. Model: %s", model_path_.c_str());
+  if (detection_period_ == std::chrono::steady_clock::duration::zero()) {
+    RCLCPP_INFO(get_logger(), "Detection runs on every received image.");
+  } else {
+    RCLCPP_INFO(get_logger(), "Detection rate limited to %.2f Hz per camera topic.", detection_hz_);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +84,37 @@ std::string OpiDetectionNode::classLabel(int class_id) const
 // ─────────────────────────────────────────────────────────────────────────────
 void OpiDetectionNode::loadModel()
 {
-  session_options_.SetIntraOpNumThreads(2);
+  // OpenVINO EP options
+  std::unordered_map<std::string, std::string> ov_options;
+  ov_options["device_type"]            = "CPU";
+  ov_options["precision"]              = "FP32";
+  ov_options["num_of_threads"]         = "8";
+  ov_options["cache_dir"]              = "/tmp/ov_cache";
+  ov_options["enable_opencl_throttling"] = "false";
+
+  if (enable_openvino_ep_) {
+    try {
+      session_options_.AppendExecutionProvider("OpenVINO", ov_options);
+      RCLCPP_INFO(get_logger(), "OpenVINO EP enabled");
+    } catch (const Ort::Exception & e) {
+      RCLCPP_WARN(
+        get_logger(),
+        "OpenVINO EP is not available in the linked ONNX Runtime build, so the node will run on CPU: %s",
+        e.what());
+      RCLCPP_WARN(
+        get_logger(),
+        "Set `enable_openvino_ep:=false` to skip this warning, or install an ONNX Runtime build with OpenVINO support.");
+    }
+  } else {
+    RCLCPP_INFO(get_logger(), "OpenVINO EP disabled by parameter; running with CPU execution provider");
+  }
+
+  // Keep these as fallback
+  session_options_.SetIntraOpNumThreads(std::thread::hardware_concurrency());
+  session_options_.SetInterOpNumThreads(1);
+  session_options_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
+  session_options_.EnableCpuMemArena();
+  session_options_.EnableMemPattern();
   session_options_.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
 
   session_ = std::make_unique<Ort::Session>(
@@ -89,6 +134,7 @@ void OpiDetectionNode::loadModel()
 
   // Input shape: [1, 3, H, W]
   input_shape_ = {1, 3, input_height_, input_width_};
+  input_buffer_.resize(1 * 3 * input_height_ * input_width_);
 
   RCLCPP_INFO(get_logger(), "ONNX model loaded. Inputs: %zu  Outputs: %zu",
               input_names_.size(), output_names_.size());
@@ -181,8 +227,20 @@ std::vector<Detection> OpiDetectionNode::postprocess(
 // ─────────────────────────────────────────────────────────────────────────────
 void OpiDetectionNode::imageCallback(
   const sensor_msgs::msg::Image::ConstSharedPtr & msg,
-  const std::string & /*camera_topic*/)
+  const std::string & camera_topic)
 {
+  const auto callback_start = std::chrono::steady_clock::now();
+
+  if (detection_period_ != std::chrono::steady_clock::duration::zero()) {
+    const auto now = std::chrono::steady_clock::now();
+    auto & last_detection_time = last_detection_time_[camera_topic];
+    if (last_detection_time.time_since_epoch().count() != 0 &&
+        now - last_detection_time < detection_period_) {
+      return;
+    }
+    last_detection_time = now;
+  }
+
   cv::Mat image;
   try {
     image = cv_bridge::toCvCopy(msg, "bgr8")->image;
@@ -195,16 +253,26 @@ void OpiDetectionNode::imageCallback(
     cv::rotate(image, image, cv::ROTATE_180);
   }
 
+  const auto preprocess_start = std::chrono::steady_clock::now();
   float scale_x, scale_y;
   cv::Mat blob = preprocess(image, scale_x, scale_y);
+  const auto preprocess_end = std::chrono::steady_clock::now();
 
   // Run inference
+  const auto inference_start = std::chrono::steady_clock::now();
   Ort::MemoryInfo mem_info =
     Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+  // Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+  //   mem_info,
+  //   reinterpret_cast<float *>(blob.data),
+  //   static_cast<size_t>(blob.total()),
+  //   input_shape_.data(),
+  //   input_shape_.size());
+  std::memcpy(input_buffer_.data(), blob.data, input_buffer_.size() * sizeof(float));
   Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
     mem_info,
-    reinterpret_cast<float *>(blob.data),
-    static_cast<size_t>(blob.total()),
+    input_buffer_.data(),
+    input_buffer_.size(),
     input_shape_.data(),
     input_shape_.size());
 
@@ -215,12 +283,15 @@ void OpiDetectionNode::imageCallback(
     1,
     output_names_.data(),
     output_names_.size());
+  const auto inference_end = std::chrono::steady_clock::now();
 
   float * raw_ptr    = output_tensors[0].GetTensorMutableData<float>();
   size_t  raw_size   = output_tensors[0].GetTensorTypeAndShapeInfo().GetElementCount();
   std::vector<float> raw_output(raw_ptr, raw_ptr + raw_size);
 
+  const auto postprocess_start = std::chrono::steady_clock::now();
   auto detections = postprocess(raw_output, scale_x, scale_y, image.cols, image.rows);
+  const auto postprocess_end = std::chrono::steady_clock::now();
 
   // Publish
   vision_msgs::msg::BoundingBox2DArray bbox_array;
@@ -250,6 +321,26 @@ void OpiDetectionNode::imageCallback(
 
   // Publish detection as image.
   bbox_img_pub_->publish(*cv_bridge::CvImage(msg->header, "bgr8", image).toImageMsg());
+
+  const auto callback_end = std::chrono::steady_clock::now();
+  const auto preprocess_ms =
+    std::chrono::duration<double, std::milli>(preprocess_end - preprocess_start).count();
+  const auto inference_ms =
+    std::chrono::duration<double, std::milli>(inference_end - inference_start).count();
+  const auto postprocess_ms =
+    std::chrono::duration<double, std::milli>(postprocess_end - postprocess_start).count();
+  const auto total_ms =
+    std::chrono::duration<double, std::milli>(callback_end - callback_start).count();
+
+  RCLCPP_INFO(
+    get_logger(),
+    "[%s] timing: preprocess=%.2f ms, inference=%.2f ms, postprocess=%.2f ms, total=%.2f ms, detections=%zu",
+    camera_topic.c_str(),
+    preprocess_ms,
+    inference_ms,
+    postprocess_ms,
+    total_ms,
+    detections.size());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
