@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Train and export an ADR hazard panel detector with Ultralytics YOLO."""
+"""Train and export an object detector with Ultralytics YOLO."""
 
 from __future__ import annotations
 
@@ -15,11 +15,10 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 from ultralytics import YOLO
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 PACKAGE_DIR = SCRIPT_DIR.parent
-DEFAULT_DATASET_YAML = PACKAGE_DIR / "data" / "adr_hazard_panel.yaml"
-DEFAULT_RUNS_DIR = PACKAGE_DIR / "runs" / "adr_panel_training"
+DEFAULT_DATASET_YAML = PACKAGE_DIR / "data" / "data.yaml"
+DEFAULT_RUNS_DIR = PACKAGE_DIR / "runs" / "training"
 
 
 @dataclass(frozen=True)
@@ -31,13 +30,13 @@ class Sample:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Fine-tune a pretrained Ultralytics YOLO model for ADR hazard panel detection "
+            "Fine-tune a pretrained Ultralytics YOLO model on a custom dataset "
             "and export the best checkpoint to ONNX."
         )
     )
     parser.add_argument(
         "--model",
-        default="yolov8s.pt",
+        default="yolo11n.pt",
         help="Pretrained Ultralytics checkpoint or model alias, e.g. yolov8s.pt or yolo11s.pt.",
     )
     parser.add_argument(
@@ -46,9 +45,9 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_DATASET_YAML,
         help="Path to the Ultralytics dataset YAML.",
     )
-    parser.add_argument("--imgsz", type=int, default=640, help="Training and export image size.")
+    parser.add_argument("--imgsz", type=int, default=416, help="Training and export image size.")
     parser.add_argument("--epochs", type=int, default=100, help="Maximum training epochs.")
-    parser.add_argument("--batch", type=int, default=8, help="Batch size.")
+    parser.add_argument("--batch", type=int, default=32, help="Batch size.")
     parser.add_argument("--device", default="0", help='Training device, e.g. "0", "0,1", or "cpu".')
     parser.add_argument("--workers", type=int, default=8, help="Data loader workers.")
     parser.add_argument("--patience", type=int, default=20, help="Early stopping patience.")
@@ -175,13 +174,18 @@ def load_labels(label_path: Path, image_shape: tuple[int, int, int]) -> list[tup
     return labels
 
 
-def draw_ground_truth(image: np.ndarray, boxes: Iterable[tuple[int, int, int, int, int]]) -> np.ndarray:
+def draw_ground_truth(
+    image: np.ndarray,
+    boxes: Iterable[tuple[int, int, int, int, int]],
+    class_names: list[str] | None = None,
+) -> np.ndarray:
     annotated = image.copy()
     for class_id, x1, y1, x2, y2 in boxes:
+        label = class_names[class_id] if class_names and class_id < len(class_names) else str(class_id)
         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
         cv2.putText(
             annotated,
-            f"gt:{class_id}",
+            f"gt:{label}",
             (x1, max(18, y1 - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -192,16 +196,17 @@ def draw_ground_truth(image: np.ndarray, boxes: Iterable[tuple[int, int, int, in
     return annotated
 
 
-def draw_predictions(image: np.ndarray, result) -> np.ndarray:
+def draw_predictions(image: np.ndarray, result, class_names: list[str] | None = None) -> np.ndarray:
     annotated = image.copy()
     for box in result.boxes:
         x1, y1, x2, y2 = box.xyxy[0].detach().cpu().numpy().astype(int).tolist()
         class_id = int(box.cls[0].item())
         conf = float(box.conf[0].item())
+        label = class_names[class_id] if class_names and class_id < len(class_names) else str(class_id)
         cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
         cv2.putText(
             annotated,
-            f"pred:{class_id} {conf:.2f}",
+            f"pred:{label} {conf:.2f}",
             (x1, max(18, y1 - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -223,9 +228,12 @@ def stack_preview(ground_truth: np.ndarray, prediction: np.ndarray) -> np.ndarra
 class TrainingMonitor:
     """Ultralytics callback bundle for TensorBoard logging and preview exports."""
 
-    def __init__(self, args: argparse.Namespace, val_samples: list[Sample]) -> None:
+    def __init__(
+        self, args: argparse.Namespace, val_samples: list[Sample], class_names: list[str] | None = None
+    ) -> None:
         self.args = args
         self.val_samples = val_samples
+        self.class_names = class_names
         self.writer: SummaryWriter | None = None
         self.run_dir: Path | None = None
         self.preview_dir: Path | None = None
@@ -241,13 +249,49 @@ class TrainingMonitor:
             self.writer.add_text("train/hparams", json.dumps(training_overrides(self.args), indent=2))
 
     def on_fit_epoch_end(self, trainer) -> None:
-        if not self.writer:
-            return
-        metrics = getattr(trainer, "metrics", {}) or {}
         epoch = int(trainer.epoch) + 1
-        for key, value in metrics.items():
-            if isinstance(value, (float, int)):
-                self.writer.add_scalar(key, value, epoch)
+        if self.writer:
+            metrics = getattr(trainer, "metrics", {}) or {}
+            for key, value in metrics.items():
+                if isinstance(value, (float, int)):
+                    self.writer.add_scalar(key, value, epoch)
+        self._log_per_class_metrics(trainer, epoch)
+
+    def _log_per_class_metrics(self, trainer, epoch: int) -> None:
+        validator = getattr(trainer, "validator", None)
+        if validator is None:
+            return
+        val_metrics = getattr(validator, "metrics", None)
+        if val_metrics is None:
+            return
+
+        # Ultralytics stores per-class data under metrics.box (DetMetrics) or directly on metrics
+        box = getattr(val_metrics, "box", val_metrics)
+        ap50 = getattr(box, "ap50", None)
+        maps = getattr(box, "maps", None)
+        ap_class_index = getattr(val_metrics, "ap_class_index", getattr(box, "ap_class_index", None))
+
+        if ap50 is None or ap_class_index is None or len(ap50) == 0:
+            return
+
+        parts = []
+        for i, cls_idx in enumerate(ap_class_index):
+            if i >= len(ap50):
+                break
+            name = self.class_names[cls_idx] if self.class_names and cls_idx < len(self.class_names) else str(cls_idx)
+            ap50_val = float(ap50[i])
+            maps_val = float(maps[i]) if maps is not None and i < len(maps) else None
+            parts.append(
+                f"{name}: mAP50={ap50_val:.3f}"
+                + (f" mAP50-95={maps_val:.3f}" if maps_val is not None else "")
+            )
+            if self.writer:
+                self.writer.add_scalar(f"per_class/mAP50_{name}", ap50_val, epoch)
+                if maps_val is not None:
+                    self.writer.add_scalar(f"per_class/mAP50-95_{name}", maps_val, epoch)
+
+        if parts:
+            print(f"[Epoch {epoch:03d}] Per-class — {' | '.join(parts)}")
 
     def on_model_save(self, trainer) -> None:
         epoch = int(trainer.epoch) + 1
@@ -286,8 +330,8 @@ class TrainingMonitor:
             )[0]
 
             preview = stack_preview(
-                draw_ground_truth(image_bgr, gt_boxes),
-                draw_predictions(image_bgr, prediction),
+                draw_ground_truth(image_bgr, gt_boxes, self.class_names),
+                draw_predictions(image_bgr, prediction, self.class_names),
             )
             preview_path = epoch_dir / f"{sample.image_path.stem}_preview.jpg"
             cv2.imwrite(str(preview_path), preview)
@@ -321,9 +365,9 @@ def training_overrides(args: argparse.Namespace) -> dict:
         "lrf": 0.01,
         "cos_lr": True,        # cosine LR schedule
         "weight_decay": 0.001,
-        "hsv_h": 0.7,
-        "hsv_s": 0.7,
-        "hsv_v": 0.9,
+        "hsv_h": 0.05,  # was 0.7 — camo class relies on hue; aggressive shifts destroy that signal
+        "hsv_s": 0.5,
+        "hsv_v": 0.4,
         "degrees": 45.0,
         "translate": 0.1,
         "scale": 1.0,
@@ -334,7 +378,7 @@ def training_overrides(args: argparse.Namespace) -> dict:
         "bgr": 0.0,
         "mosaic": 0.5,
         "mixup": 0.1,
-        "copy_paste": 0.0,
+        "copy_paste": 0.3,
         "copy_paste_mode": "flip",
         "auto_augment": "randaugment",
         "erasing": 0.4,
@@ -346,19 +390,19 @@ def training_overrides(args: argparse.Namespace) -> dict:
         "verbose": True,
     }
 
-
 def main() -> None:
     args = parse_args()
     args.data = args.data.resolve()
     args.project = args.project.resolve()
 
     data_config = read_dataset_config(args.data)
+    class_names: list[str] | None = data_config.get("names")
     val_image_dir = resolve_split_dir(args.data, data_config, "val")
-    val_label_dir = val_image_dir.parent.parent / "labels" / val_image_dir.name
+    val_label_dir = val_image_dir.parent / "labels" #/ val_image_dir.name
     val_samples = collect_samples(val_image_dir, val_label_dir, args.preview_count)
 
     model = YOLO(args.model)
-    monitor = TrainingMonitor(args, val_samples)
+    monitor = TrainingMonitor(args, val_samples, class_names)
     model.add_callback("on_train_start", monitor.on_train_start)
     model.add_callback("on_fit_epoch_end", monitor.on_fit_epoch_end)
     model.add_callback("on_model_save", monitor.on_model_save)

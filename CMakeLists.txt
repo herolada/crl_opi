@@ -28,20 +28,29 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES geometry_msgs std_msgs
 )
 
-# ONNX Runtime – adjust ONNXRUNTIME_ROOT if installed elsewhere
-set(ONNXRUNTIME_ROOT "/opt/onnxruntime")
-#  CACHE PATH "ONNX Runtime install prefix")
-# find_library(ONNXRUNTIME_LIB onnxruntime HINTS ${ONNXRUNTIME_ROOT}/lib REQUIRED)
-# find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h
-          # HINTS ${ONNXRUNTIME_ROOT}/include/onnxruntime/core/session REQUIRED)
+# ONNX Runtime – use the local source/build tree by default, but allow overrides
+if(DEFINED ENV{ONNXRUNTIME_ROOT} AND NOT "$ENV{ONNXRUNTIME_ROOT}" STREQUAL "")
+  set(ONNXRUNTIME_ROOT "$ENV{ONNXRUNTIME_ROOT}")
+else()
+  set(ONNXRUNTIME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/onnxruntime")
+endif()
+set(ONNXRUNTIME_BUILD_DIR "${ONNXRUNTIME_ROOT}/build/Linux/Release")
+set(ONNXRUNTIME_INCLUDE_DIR "${ONNXRUNTIME_ROOT}/include/onnxruntime/core/session")
+if(NOT EXISTS "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h")
+  message(FATAL_ERROR
+    "Could not find ONNX Runtime header: ${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_cxx_api.h")
+endif()
+find_library(ONNXRUNTIME_LIBRARY
+  NAMES onnxruntime libonnxruntime.so
+  HINTS "${ONNXRUNTIME_BUILD_DIR}" "${ONNXRUNTIME_ROOT}/lib"
+  REQUIRED)
 
 # ── DETECTION NODE ────────────────────────────────────────────────────────────────────
 add_executable(opi_detection_node src/opi_detection_node.cpp)
 
 target_include_directories(opi_detection_node PRIVATE
   include
-  # ${ONNXRUNTIME_INCLUDE}
-  ${ONNXRUNTIME_ROOT}/include
+  ${ONNXRUNTIME_INCLUDE_DIR}
   ${OpenCV_INCLUDE_DIRS}
 )
 
@@ -55,8 +64,7 @@ ament_target_dependencies(opi_detection_node
 )
 
 target_link_libraries(opi_detection_node
-  # ${ONNXRUNTIME_LIB}
-  ${ONNXRUNTIME_ROOT}/lib/libonnxruntime.so
+  ${ONNXRUNTIME_LIBRARY}
   ${OpenCV_LIBS}
 )
 
@@ -93,6 +101,8 @@ target_include_directories(opi_tracker_node PRIVATE
 ament_target_dependencies(opi_tracker_node
   rclcpp
   cv_bridge
+  sensor_msgs
+  vision_msgs
   geometry_msgs
   nav_msgs
   tf2_ros

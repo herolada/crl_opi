@@ -9,14 +9,13 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
-#include <vision_msgs/msg/bounding_box2_d_array.hpp>
-#include <vision_msgs/msg/bounding_box2_d.hpp>
+#include <vision_msgs/msg/detection2_d_array.hpp>
+#include <vision_msgs/msg/detection2_d.hpp>
+#include <vision_msgs/msg/object_hypothesis_with_pose.hpp>
 #include <cv_bridge/cv_bridge.hpp>
-#include <image_transport/image_transport.hpp>
 
 #include <opencv2/opencv.hpp>
 #include <onnxruntime_cxx_api.h>
-// #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 
 namespace opi_detection
 {
@@ -44,7 +43,6 @@ private:
   int   input_height_;
   bool  rotate_image_180_;
   double detection_hz_;
-  bool  enable_openvino_ep_;
   std::chrono::steady_clock::duration detection_period_;
 
   // ── ONNX Runtime ──────────────────────────────────────────────────────────
@@ -60,10 +58,9 @@ private:
   std::vector<float>                   input_buffer_;
 
   // ── ROS I/O ───────────────────────────────────────────────────────────────
-  // One subscriber per camera topic (stored so they are not destroyed)
   std::vector<rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr> image_subs_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr         camera_info_sub_;
-  rclcpp::Publisher<vision_msgs::msg::BoundingBox2DArray>::SharedPtr    bbox_pub_;
+  rclcpp::Publisher<vision_msgs::msg::Detection2DArray>::SharedPtr      detections_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr                 bbox_img_pub_;
   std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_detection_time_;
 

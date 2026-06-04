@@ -11,26 +11,20 @@ OpiLocalizationNode::OpiLocalizationNode(const rclcpp::NodeOptions & options)
 : Node("opi_localization_node", options)
 {
   // ── Parameters ──────────────────────────────────────────────────────────
-  placard_width_m_  = declare_parameter<double>("placard_width_m",  0.40);
-  placard_height_m_ = declare_parameter<double>("placard_height_m", 0.30);
-  map_frame_        = declare_parameter<std::string>("map_frame",    "map");
-  camera_frame_     = declare_parameter<std::string>("camera_frame", "camera_optical_frame");
+  adr_width_m_   = declare_parameter<double>("adr_width_m",   0.40);
+  adr_height_m_  = declare_parameter<double>("adr_height_m",  0.30);
+  drone_width_m_  = declare_parameter<double>("drone_width_m",  0.50);
+  drone_height_m_ = declare_parameter<double>("drone_height_m", 0.50);
+  camo_width_m_   = declare_parameter<double>("camo_width_m",   0.50);
+  camo_height_m_  = declare_parameter<double>("camo_height_m",  1.80);
+
+  map_frame_    = declare_parameter<std::string>("map_frame",    "map");
+  camera_frame_ = declare_parameter<std::string>("camera_frame", "camera_optical_frame");
 
   std::string camera_info_topic =
     declare_parameter<std::string>("camera_info_topic", "/camera/camera_info");
-  std::string bbox_topic   = declare_parameter<std::string>("bbox_topic",   "opi/detections");
+  std::string input_topic  = declare_parameter<std::string>("input_topic",  "opi/detections");
   std::string output_topic = declare_parameter<std::string>("output_topic", "opi/positions_raw");
-
-  // ── Model points (placard corners, origin at centre, z=0) ────────────────
-  // Order: top-left, top-right, bottom-right, bottom-left (CCW when facing placard)
-  float hw = static_cast<float>(placard_width_m_  / 2.0);
-  float hh = static_cast<float>(placard_height_m_ / 2.0);
-  model_points_ = {
-    cv::Point3f(-hw,  hh, 0.0f),  // top-left
-    cv::Point3f( hw,  hh, 0.0f),  // top-right
-    cv::Point3f( hw, -hh, 0.0f),  // bottom-right
-    cv::Point3f(-hw, -hh, 0.0f),  // bottom-left
-  };
 
   // ── TF ──────────────────────────────────────────────────────────────────
   tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -41,23 +35,25 @@ OpiLocalizationNode::OpiLocalizationNode(const rclcpp::NodeOptions & options)
     camera_info_topic, rclcpp::SensorDataQoS(),
     std::bind(&OpiLocalizationNode::cameraInfoCallback, this, std::placeholders::_1));
 
-  bbox_sub_ = create_subscription<vision_msgs::msg::BoundingBox2DArray>(
-    bbox_topic, rclcpp::SystemDefaultsQoS(),
-    std::bind(&OpiLocalizationNode::bboxCallback, this, std::placeholders::_1));
+  detections_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
+    input_topic, rclcpp::SystemDefaultsQoS(),
+    std::bind(&OpiLocalizationNode::detectionsCallback, this, std::placeholders::_1));
 
-  pose_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
+  detections_pub_ = create_publisher<vision_msgs::msg::Detection2DArray>(
     output_topic, rclcpp::SystemDefaultsQoS());
 
   RCLCPP_INFO(get_logger(),
-    "OPI localization node ready. Placard size: %.2f × %.2f m",
-    placard_width_m_, placard_height_m_);
+    "OPI localization node ready. adr=%.2f×%.2f m, drone=%.2f×%.2f m, camo=%.2f×%.2f m",
+    adr_width_m_, adr_height_m_,
+    drone_width_m_, drone_height_m_,
+    camo_width_m_, camo_height_m_);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 void OpiLocalizationNode::cameraInfoCallback(
   const sensor_msgs::msg::CameraInfo::ConstSharedPtr & msg)
 {
-  if (camera_info_received_) return;  // only need it once (or re-update on change)
+  if (camera_info_received_) return;
 
   camera_frame_ = msg->header.frame_id;
 
@@ -75,27 +71,59 @@ void OpiLocalizationNode::cameraInfoCallback(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+std::array<cv::Point3f, 4> OpiLocalizationNode::getModelPoints(
+  const std::string & class_id) const
+{
+  float w, h;
+  if (class_id == "drone") {
+    w = static_cast<float>(drone_width_m_);
+    h = static_cast<float>(drone_height_m_);
+  } else if (class_id == "camo") {
+    w = static_cast<float>(camo_width_m_);
+    h = static_cast<float>(camo_height_m_);
+  } else {
+    // "adr" and any unknown class fall back to ADR panel dimensions
+    w = static_cast<float>(adr_width_m_);
+    h = static_cast<float>(adr_height_m_);
+  }
+
+  float hw = w / 2.0f;
+  float hh = h / 2.0f;
+  // Order: top-left, top-right, bottom-right, bottom-left (origin at centre, z=0)
+  return {{
+    cv::Point3f(-hw,  hh, 0.0f),
+    cv::Point3f( hw,  hh, 0.0f),
+    cv::Point3f( hw, -hh, 0.0f),
+    cv::Point3f(-hw, -hh, 0.0f),
+  }};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 bool OpiLocalizationNode::solvePlacard(
-  const vision_msgs::msg::BoundingBox2D & bbox,
+  const vision_msgs::msg::Detection2D & det,
   cv::Vec3d & rvec, cv::Vec3d & tvec) const
 {
-  // Derive the four image corners from the centre + size bounding box.
-  // Order must match model_points_: TL, TR, BR, BL.
-  float cx = static_cast<float>(bbox.center.position.x);
-  float cy = static_cast<float>(bbox.center.position.y);
-  float hw = static_cast<float>(bbox.size_x / 2.0);
-  float hh = static_cast<float>(bbox.size_y / 2.0);
+  if (det.results.empty()) return false;
 
+  const std::string & class_id = det.results[0].hypothesis.class_id;
+  auto model_pts = getModelPoints(class_id);
+
+  float cx = static_cast<float>(det.bbox.center.position.x);
+  float cy = static_cast<float>(det.bbox.center.position.y);
+  float hw = static_cast<float>(det.bbox.size_x / 2.0);
+  float hh = static_cast<float>(det.bbox.size_y / 2.0);
+
+  // Image corners in same order as model_points: TL, TR, BR, BL
   std::vector<cv::Point2f> image_points = {
-    {cx - hw, cy - hh},  // top-left
-    {cx + hw, cy - hh},  // top-right
-    {cx + hw, cy + hh},  // bottom-right
-    {cx - hw, cy + hh},  // bottom-left
+    {cx - hw, cy - hh},
+    {cx + hw, cy - hh},
+    {cx + hw, cy + hh},
+    {cx - hw, cy + hh},
   };
 
-  std::vector<cv::Point3f> obj_pts(model_points_.begin(), model_points_.end());
+  std::vector<cv::Point3f> obj_pts(model_pts.begin(), model_pts.end());
 
-  // IPPE (Infinitesimal Plane-based Pose Estimation) – best for planar targets.
+  // IPPE — best for planar targets
   std::vector<cv::Vec3d> rvecs, tvecs;
   std::vector<double>    repr_errors;
 
@@ -109,8 +137,7 @@ bool OpiLocalizationNode::solvePlacard(
 
   if (!ok || rvecs.empty()) return false;
 
-  // IPPE returns two solutions; pick the one with lower reprojection error
-  // that also has positive z (in front of camera).
+  // IPPE returns two solutions; pick the one with positive z and lower reprojection error
   int best = 0;
   if (rvecs.size() > 1) {
     bool z0_positive = (tvecs[0][2] > 0.0);
@@ -138,19 +165,13 @@ bool OpiLocalizationNode::transformToMap(
   const std_msgs::msg::Header & header,
   geometry_msgs::msg::Pose & pose_in_map) const
 {
-  // Build a PoseStamped in camera frame from the translation vector.
   geometry_msgs::msg::PoseStamped pose_camera;
   pose_camera.header.frame_id = camera_frame_;
   pose_camera.header.stamp    = header.stamp;
   pose_camera.pose.position.x = tvec[0];
   pose_camera.pose.position.y = tvec[1];
   pose_camera.pose.position.z = tvec[2];
-
-  // Convert rotation vector to quaternion via Rodrigues
-  cv::Mat rot_mat;
-  cv::Rodrigues(cv::Mat(3, 1, CV_64F, const_cast<double *>(tvec.val)), rot_mat);
-  // (Use rvec for orientation but tvec for position – clarify variable name below)
-  pose_camera.pose.orientation.w = 1.0;  // placeholder; orientation not consumed downstream
+  pose_camera.pose.orientation.w = 1.0;  // orientation not consumed downstream
 
   geometry_msgs::msg::PoseStamped pose_map;
   try {
@@ -166,32 +187,36 @@ bool OpiLocalizationNode::transformToMap(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void OpiLocalizationNode::bboxCallback(
-  const vision_msgs::msg::BoundingBox2DArray::ConstSharedPtr & msg)
+void OpiLocalizationNode::detectionsCallback(
+  const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg)
 {
   if (!camera_info_received_) {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
       "Waiting for CameraInfo …");
     return;
   }
-  if (msg->boxes.empty()) return;
+  if (msg->detections.empty()) return;
 
-  geometry_msgs::msg::PoseArray pose_array;
-  pose_array.header.stamp    = msg->header.stamp;
-  pose_array.header.frame_id = map_frame_;
+  vision_msgs::msg::Detection2DArray out_array;
+  out_array.header = msg->header;
 
-  for (const auto & bbox : msg->boxes) {
+  for (const auto & det : msg->detections) {
+    if (det.results.empty()) continue;
+
     cv::Vec3d rvec, tvec;
-    if (!solvePlacard(bbox, rvec, tvec)) continue;
+    if (!solvePlacard(det, rvec, tvec)) continue;
 
     geometry_msgs::msg::Pose pose_map;
     if (!transformToMap(rvec, tvec, msg->header, pose_map)) continue;
 
-    pose_array.poses.push_back(pose_map);
+    // Republish this detection with the 3D pose filled in
+    vision_msgs::msg::Detection2D out_det = det;
+    out_det.results[0].pose.pose = pose_map;
+    out_array.detections.push_back(out_det);
   }
 
-  if (!pose_array.poses.empty()) {
-    pose_pub_->publish(pose_array);
+  if (!out_array.detections.empty()) {
+    detections_pub_->publish(out_array);
   }
 }
 

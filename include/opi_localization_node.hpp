@@ -6,10 +6,10 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
-#include <vision_msgs/msg/bounding_box2_d_array.hpp>
-#include <geometry_msgs/msg/pose_array.hpp>
+#include <vision_msgs/msg/detection2_d_array.hpp>
+#include <vision_msgs/msg/detection2_d.hpp>
+#include <vision_msgs/msg/object_hypothesis_with_pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
-#include <nav_msgs/msg/odometry.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
@@ -26,17 +26,17 @@ public:
 
 private:
   // ── Parameters ────────────────────────────────────────────────────────────
-  double placard_width_m_;   // physical width of the OPI placard [m]
-  double placard_height_m_;  // physical height of the OPI placard [m]
+  double adr_width_m_;     // ADR hazard panel physical width  [m]
+  double adr_height_m_;    // ADR hazard panel physical height [m]
+  double drone_width_m_;   // Drone physical width  [m]
+  double drone_height_m_;  // Drone physical height [m]
+  double camo_width_m_;    // Camouflaged person shoulder width [m]
+  double camo_height_m_;   // Camouflaged person height [m]
+
   std::string map_frame_;
   std::string camera_frame_;
 
   // ── State ─────────────────────────────────────────────────────────────────
-  // 3-D model points of the placard corners in the placard local frame
-  // (origin at centre, z = 0 plane, x right, y up).
-  std::array<cv::Point3f, 4> model_points_;
-
-  // Latest camera intrinsics
   cv::Mat camera_matrix_;
   cv::Mat dist_coeffs_;
   bool    camera_info_received_{false};
@@ -46,18 +46,20 @@ private:
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   // ── ROS I/O ───────────────────────────────────────────────────────────────
-  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr       camera_info_sub_;
-  rclcpp::Subscription<vision_msgs::msg::BoundingBox2DArray>::SharedPtr bbox_sub_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr          pose_pub_;
+  rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr           camera_info_sub_;
+  rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr     detections_sub_;
+  rclcpp::Publisher<vision_msgs::msg::Detection2DArray>::SharedPtr        detections_pub_;
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
   void cameraInfoCallback(const sensor_msgs::msg::CameraInfo::ConstSharedPtr & msg);
-  void bboxCallback(const vision_msgs::msg::BoundingBox2DArray::ConstSharedPtr & msg);
+  void detectionsCallback(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg);
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  // Attempt to solve PnP with IPPE for a single bounding box.
-  // Returns true and fills pose_in_camera if successful.
-  bool solvePlacard(const vision_msgs::msg::BoundingBox2D & bbox,
+  // Returns the 4 model corners [TL, TR, BR, BL] for the given class.
+  std::array<cv::Point3f, 4> getModelPoints(const std::string & class_id) const;
+
+  // Attempt to solve PnP with IPPE for a single detection.
+  bool solvePlacard(const vision_msgs::msg::Detection2D & det,
                     cv::Vec3d & rvec, cv::Vec3d & tvec) const;
 
   // Transform a pose from camera frame to map frame via TF.

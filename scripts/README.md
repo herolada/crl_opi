@@ -38,6 +38,20 @@ Or change model (should get automatically downloaded, if provided by the latest 
 uv run python crl_opi/scripts/train_adr_panel_detector.py --model yolo11s.pt --tensorboard
 ```
 
+## Quantize + Validate
+
+If you already have a trained checkpoint or exported ONNX model, you can quantize it and compare
+FP32 vs INT8 validation in one step:
+
+```bash
+uv run python crl_opi/scripts/quantize_and_validate_adr_panel_detector.py \
+    --model crl_opi/runs/adr_panel_training/yolo11s/weights/best.onnx \
+    --data crl_opi/data/adr_hazard_panel.yaml
+```
+
+The script prints validation metrics, per-model latency, and wall-clock validation time for both
+the original and quantized model.
+
 ## Monitor Training
 
 Launch TensorBoard against the run directory:

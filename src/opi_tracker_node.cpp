@@ -1,8 +1,8 @@
 #include "opi_tracker_node.hpp"
 
-#include <limits>
 #include <cmath>
 #include <sstream>
+#include <tuple>
 
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -20,20 +20,19 @@ OpiTrackerNode::OpiTrackerNode(const rclcpp::NodeOptions & options)
 : Node("opi_tracker_node", options)
 {
   // ── Parameters ──────────────────────────────────────────────────────────
-  cluster_radius_m_ = declare_parameter<double>("cluster_radius_m", 0.75);
-  min_count_        = static_cast<uint32_t>(declare_parameter<int>("min_count", 5));
-  prune_timeout_s_  = declare_parameter<double>("prune_timeout_s", 60.0);
+  cluster_radius_m_     = declare_parameter<double>("cluster_radius_m", 0.75);
+  min_count_            = static_cast<uint32_t>(declare_parameter<int>("min_count", 5));
   opi_reached_distance_ = declare_parameter<double>("opi_reached_distance", 1.0);
-  map_frame_        = declare_parameter<std::string>("map_frame",   "map");
-  double publish_hz = declare_parameter<double>("publish_hz", 2.0);
+  map_frame_            = declare_parameter<std::string>("map_frame", "map");
+  double publish_hz     = declare_parameter<double>("publish_hz", 2.0);
 
   std::string input_topic = declare_parameter<std::string>("input_topic",  "opi/positions_raw");
   tracked_topic_          = declare_parameter<std::string>("tracked_topic", "opi/tracked");
-  goals_topic_            = declare_parameter<std::string>("goals_topic", "opi/goals");
-  marker_topic_           = declare_parameter<std::string>("marker_topic", "opi/markers");
-  std::string odom_topic  = declare_parameter<std::string>("odom_topic", "/odom");
-  image_topic_  = declare_parameter("image_topic", "/luxonis/oak/rgb/image_raw");
-  img_save_path_ = declare_parameter("img_save_path", "~/opi_images/");
+  goals_topic_            = declare_parameter<std::string>("goals_topic",   "opi/goals");
+  marker_topic_           = declare_parameter<std::string>("marker_topic",  "opi/markers");
+  std::string odom_topic  = declare_parameter<std::string>("odom_topic",    "/odom");
+  image_topic_            = declare_parameter("image_topic",    "/luxonis/oak/rgb/image_raw");
+  img_save_path_          = declare_parameter("img_save_path",  "~/opi_images/");
   MKDIR(img_save_path_.c_str());
 
   // ── TF ──────────────────────────────────────────────────────────────────
@@ -41,9 +40,9 @@ OpiTrackerNode::OpiTrackerNode(const rclcpp::NodeOptions & options)
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   // ── ROS I/O ─────────────────────────────────────────────────────────────
-  positions_sub_ = create_subscription<geometry_msgs::msg::PoseArray>(
+  detections_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
     input_topic, rclcpp::SystemDefaultsQoS(),
-    std::bind(&OpiTrackerNode::positionsCallback, this, std::placeholders::_1));
+    std::bind(&OpiTrackerNode::detectionsCallback, this, std::placeholders::_1));
 
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     odom_topic, rclcpp::SystemDefaultsQoS(),
@@ -64,17 +63,19 @@ OpiTrackerNode::OpiTrackerNode(const rclcpp::NodeOptions & options)
     std::bind(&OpiTrackerNode::publishTimerCallback, this));
 
   RCLCPP_INFO(get_logger(),
-    "OPI tracker node ready. cluster_radius=%.2f m, min_count=%u, prune=%.1f s, reached=%.2f m",
-    cluster_radius_m_, min_count_, prune_timeout_s_, opi_reached_distance_);
+    "OPI tracker node ready. cluster_radius=%.2f m, min_count=%u, reached=%.2f m",
+    cluster_radius_m_, min_count_, opi_reached_distance_);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-OpiHypothesis * OpiTrackerNode::findNearest(const Eigen::Vector3d & meas)
+OpiHypothesis * OpiTrackerNode::findNearest(
+  const Eigen::Vector3d & meas, const std::string & class_id)
 {
-  double         best_dist = cluster_radius_m_;
+  double          best_dist = cluster_radius_m_;
   OpiHypothesis * best_hyp  = nullptr;
 
   for (auto & [id, hyp] : hypotheses_) {
+    if (hyp.class_id != class_id) continue;  // never merge across classes
     double d = (hyp.centroid - meas).norm();
     if (d < best_dist) {
       best_dist = d;
@@ -85,70 +86,50 @@ OpiHypothesis * OpiTrackerNode::findNearest(const Eigen::Vector3d & meas)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void OpiTrackerNode::pruneHypotheses(const rclcpp::Time & now)
-{
-  std::vector<uint32_t> to_remove;
-  for (const auto & [id, hyp] : hypotheses_) {
-    double age = (now - hyp.last_seen).seconds();
-    if (age > prune_timeout_s_) {
-      to_remove.push_back(id);
-    }
-  }
-  for (uint32_t id : to_remove) {
-    RCLCPP_INFO(get_logger(), "Pruned stale OPI hypothesis id=%u", id);
-    hypotheses_.erase(id);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-void OpiTrackerNode::positionsCallback(
-  const geometry_msgs::msg::PoseArray::ConstSharedPtr & msg)
+void OpiTrackerNode::detectionsCallback(
+  const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg)
 {
   rclcpp::Time stamp(msg->header.stamp);
-  // pruneHypotheses(stamp);
 
   geometry_msgs::msg::PoseStamped robot_pose;
   const bool can_check_visited =
     have_robot_pose_ && getRobotPoseInFrame(msg->header.frame_id, stamp, robot_pose);
 
-  for (const auto & pose : msg->poses) {
-    Eigen::Vector3d meas(pose.position.x, pose.position.y, pose.position.z);
+  for (const auto & det : msg->detections) {
+    if (det.results.empty()) continue;
 
-    OpiHypothesis * hyp = findNearest(meas);
+    const std::string & class_id = det.results[0].hypothesis.class_id;
+    const auto & pos = det.results[0].pose.pose.position;
+    Eigen::Vector3d meas(pos.x, pos.y, pos.z);
+
+    OpiHypothesis * hyp = findNearest(meas, class_id);
 
     if (hyp != nullptr) {
-      // Update running mean (online / incremental mean)
       ++hyp->count;
       hyp->centroid += (meas - hyp->centroid) / static_cast<double>(hyp->count);
       hyp->last_seen = stamp;
     } else {
-      // Create new hypothesis
       OpiHypothesis new_hyp;
       new_hyp.id        = next_id_++;
+      new_hyp.class_id  = class_id;
       new_hyp.centroid  = meas;
       new_hyp.count     = 1;
       new_hyp.last_seen = stamp;
       new_hyp.frame     = msg->header.frame_id;
       hypotheses_[new_hyp.id] = new_hyp;
-      RCLCPP_INFO(get_logger(), "New OPI hypothesis id=%u at [%.2f, %.2f, %.2f]",
-                  new_hyp.id, meas.x(), meas.y(), meas.z());
-      takePhoto(new_hyp.id, "new");
+      RCLCPP_INFO(get_logger(), "New OPI hypothesis id=%u class=%s at [%.2f, %.2f, %.2f]",
+                  new_hyp.id, class_id.c_str(), meas.x(), meas.y(), meas.z());
+      takePhoto(static_cast<int>(new_hyp.id), "new");
+      hyp = &hypotheses_.at(new_hyp.id);
     }
 
-    if (hyp == nullptr) {
-      hyp = &hypotheses_.at(next_id_ - 1);
-    }
-
-    if (can_check_visited && hyp != nullptr && !hyp->visited) {
+    if (can_check_visited && !hyp->visited) {
       const double dx = hyp->centroid.x() - robot_pose.pose.position.x;
       const double dy = hyp->centroid.y() - robot_pose.pose.position.y;
-      const double distance_xy = std::hypot(dx, dy);
-      if (distance_xy <= opi_reached_distance_) {
+      if (std::hypot(dx, dy) <= opi_reached_distance_) {
         hyp->visited = true;
-        RCLCPP_INFO(
-          get_logger(),
-          "Marked OPI hypothesis id=%u visited at XY distance %.2f m",
-          hyp->id, distance_xy);
+        RCLCPP_INFO(get_logger(),
+          "Marked OPI hypothesis id=%u class=%s visited", hyp->id, hyp->class_id.c_str());
       }
     }
   }
@@ -158,40 +139,34 @@ void OpiTrackerNode::positionsCallback(
 void OpiTrackerNode::odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr & msg)
 {
   latest_robot_pose_.header = msg->header;
-  latest_robot_pose_.pose = msg->pose.pose;
-  have_robot_pose_ = true;
+  latest_robot_pose_.pose   = msg->pose.pose;
+  have_robot_pose_          = true;
 
   geometry_msgs::msg::PoseStamped robot_pose_transformed;
 
-  for (auto & [id,hyp] : hypotheses_) {
-
-    bool can_check_visited = true;
-
-    if (robot_pose_transformed == geometry_msgs::msg::PoseStamped() || robot_pose_transformed.header.frame_id != hyp.frame) {
-
+  for (auto & [id, hyp] : hypotheses_) {
+    if (robot_pose_transformed == geometry_msgs::msg::PoseStamped() ||
+        robot_pose_transformed.header.frame_id != hyp.frame)
+    {
       rclcpp::Time stamp(msg->header.stamp);
-      can_check_visited =
-        have_robot_pose_ && getRobotPoseInFrame(hyp.frame, stamp, robot_pose_transformed);
-
+      if (!getRobotPoseInFrame(hyp.frame, stamp, robot_pose_transformed)) continue;
     }
-      
-    if (can_check_visited && !hyp.visited) {
+
+    if (!hyp.visited) {
       const double dx = hyp.centroid.x() - robot_pose_transformed.pose.position.x;
       const double dy = hyp.centroid.y() - robot_pose_transformed.pose.position.y;
       const double distance_xy = std::hypot(dx, dy);
 
       if (distance_xy <= opi_reached_distance_) {
         hyp.visited = true;
-        RCLCPP_INFO(
-          get_logger(),
-          "Marked OPI hypothesis id=%u visited at XY distance %.2f m",
-          hyp.id, distance_xy);
-        takePhoto(hyp.id, "closeup");
+        RCLCPP_INFO(get_logger(),
+          "Marked OPI hypothesis id=%u class=%s visited at XY distance %.2f m",
+          hyp.id, hyp.class_id.c_str(), distance_xy);
+        takePhoto(static_cast<int>(hyp.id), "closeup");
       } else {
-        RCLCPP_INFO(
-          get_logger(),
-          "OPI too far id=%u at XY distance %.2f m",
-          hyp.id, distance_xy);
+        RCLCPP_INFO(get_logger(),
+          "OPI too far id=%u class=%s at XY distance %.2f m",
+          hyp.id, hyp.class_id.c_str(), distance_xy);
       }
     }
   }
@@ -203,7 +178,7 @@ void OpiTrackerNode::publishTimerCallback()
   rclcpp::Time now = get_clock()->now();
 
   crl_opi::msg::TrackedPoseArray out;
-  geometry_msgs::msg::PoseArray unvisited_out;
+  geometry_msgs::msg::PoseArray  unvisited_out;
   out.header.stamp    = now;
   out.header.frame_id = map_frame_;
   unvisited_out.header = out.header;
@@ -212,12 +187,13 @@ void OpiTrackerNode::publishTimerCallback()
     if (hyp.count < min_count_) continue;
 
     crl_opi::msg::TrackedPose tracked_pose;
-    tracked_pose.id = id;
-    tracked_pose.pose.position.x    = hyp.centroid.x();
-    tracked_pose.pose.position.y    = hyp.centroid.y();
-    tracked_pose.pose.position.z    = hyp.centroid.z();
-    tracked_pose.pose.orientation.w = 1.0;
-    tracked_pose.visited = hyp.visited;
+    tracked_pose.id                  = id;
+    tracked_pose.class_id            = hyp.class_id;
+    tracked_pose.pose.position.x     = hyp.centroid.x();
+    tracked_pose.pose.position.y     = hyp.centroid.y();
+    tracked_pose.pose.position.z     = hyp.centroid.z();
+    tracked_pose.pose.orientation.w  = 1.0;
+    tracked_pose.visited             = hyp.visited;
     out.poses.push_back(tracked_pose);
 
     if (!hyp.visited) {
@@ -231,23 +207,23 @@ void OpiTrackerNode::publishTimerCallback()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void OpiTrackerNode::takePhoto(int id, std::string specifier)
+void OpiTrackerNode::takePhoto(int id, const std::string & specifier)
 {
   RCLCPP_INFO(get_logger(), "Trying to take a photo of OPI %d.", id);
-  sensor_msgs::msg::Image img_msg; 
+  sensor_msgs::msg::Image img_msg;
   auto timeout = std::chrono::seconds(1);
   bool received_msg = rclcpp::wait_for_message(img_msg, shared_from_this(), image_topic_, timeout);
-  if (received_msg) {
-    RCLCPP_INFO(get_logger(), "Sucessfully taken photo of OPI %d!", id);
-  } else {
-    RCLCPP_WARN(get_logger(), "Failed to take photo of the OPI! wait_for_msg did not receive a msg in %ld s",timeout.count());
+  if (!received_msg) {
+    RCLCPP_WARN(get_logger(),
+      "Failed to take photo of the OPI! wait_for_msg did not receive a msg in %ld s",
+      timeout.count());
     return;
   }
 
-  // save the photo to a file
-  cv_bridge::CvImageConstPtr cv_img = cv_bridge::toCvShare(std::make_shared<sensor_msgs::msg::Image>(img_msg), img_msg.encoding);
+  cv_bridge::CvImageConstPtr cv_img =
+    cv_bridge::toCvShare(std::make_shared<sensor_msgs::msg::Image>(img_msg), img_msg.encoding);
 
-  if(cv_img->image.empty()) {
+  if (cv_img->image.empty()) {
     RCLCPP_ERROR(get_logger(), "The image is empty.");
     return;
   }
@@ -260,8 +236,9 @@ void OpiTrackerNode::takePhoto(int id, std::string specifier)
         : "";
 
   std::string save_path =
-      img_save_path_ + separator + "OPI_" + std::to_string(id) + "_" + specifier + ".png";
+    img_save_path_ + separator + "OPI_" + std::to_string(id) + "_" + specifier + ".png";
   cv::imwrite(save_path, cv_img->image);
+  RCLCPP_INFO(get_logger(), "Saved photo of OPI %d to %s", id, save_path.c_str());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,13 +247,11 @@ bool OpiTrackerNode::getRobotPoseInFrame(
   const rclcpp::Time & /*stamp*/,
   geometry_msgs::msg::PoseStamped & robot_pose) const
 {
-  if (!have_robot_pose_) {
-    return false;
-  }
+  if (!have_robot_pose_) return false;
 
   if (target_frame.empty()) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 2000, "Cannot compare OPI and robot pose: empty target frame.");
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+      "Cannot compare OPI and robot pose: empty target frame.");
     return false;
   }
 
@@ -286,12 +261,11 @@ bool OpiTrackerNode::getRobotPoseInFrame(
   }
 
   try {
-    tf_buffer_->transform(
-      latest_robot_pose_, robot_pose, target_frame, tf2::durationFromSec(0.1));
+    tf_buffer_->transform(latest_robot_pose_, robot_pose, target_frame,
+                          tf2::durationFromSec(0.1));
     return true;
   } catch (const tf2::TransformException & ex) {
-    RCLCPP_WARN_THROTTLE(
-      get_logger(), *get_clock(), 2000,
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
       "Failed to transform robot pose from '%s' to '%s': %s",
       latest_robot_pose_.header.frame_id.c_str(), target_frame.c_str(), ex.what());
     return false;
@@ -299,13 +273,20 @@ bool OpiTrackerNode::getRobotPoseInFrame(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+std::tuple<float, float, float> OpiTrackerNode::classColor(const std::string & class_id)
+{
+  if (class_id == "drone") return {0.20f, 0.50f, 0.90f};   // blue
+  if (class_id == "camo")  return {0.20f, 0.75f, 0.20f};   // green
+  return {0.74f, 0.25f, 0.74f};                             // purple (adr + fallback)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 void OpiTrackerNode::publishMarkers(const rclcpp::Time & stamp)
 {
   visualization_msgs::msg::MarkerArray marker_array;
 
-  // Delete all old markers first
   visualization_msgs::msg::Marker delete_all;
-  delete_all.action = visualization_msgs::msg::Marker::DELETEALL;
+  delete_all.action          = visualization_msgs::msg::Marker::DELETEALL;
   delete_all.header.frame_id = map_frame_;
   delete_all.header.stamp    = stamp;
   marker_array.markers.push_back(delete_all);
@@ -313,22 +294,24 @@ void OpiTrackerNode::publishMarkers(const rclcpp::Time & stamp)
   for (const auto & [id, hyp] : hypotheses_) {
     if (hyp.count < min_count_) continue;
 
+    auto [r, g, b] = classColor(hyp.class_id);
+
     // Sphere at centroid
     visualization_msgs::msg::Marker sphere;
-    sphere.header.frame_id = map_frame_;
-    sphere.header.stamp    = stamp;
-    sphere.ns              = "opi_hypotheses";
-    sphere.id              = static_cast<int>(id);
-    sphere.type            = visualization_msgs::msg::Marker::SPHERE;
-    sphere.action          = visualization_msgs::msg::Marker::ADD;
-    sphere.pose.position.x = hyp.centroid.x();
-    sphere.pose.position.y = hyp.centroid.y();
-    sphere.pose.position.z = hyp.centroid.z();
+    sphere.header.frame_id    = map_frame_;
+    sphere.header.stamp       = stamp;
+    sphere.ns                 = "opi_hypotheses";
+    sphere.id                 = static_cast<int>(id);
+    sphere.type               = visualization_msgs::msg::Marker::SPHERE;
+    sphere.action             = visualization_msgs::msg::Marker::ADD;
+    sphere.pose.position.x    = hyp.centroid.x();
+    sphere.pose.position.y    = hyp.centroid.y();
+    sphere.pose.position.z    = hyp.centroid.z();
     sphere.pose.orientation.w = 1.0;
     sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.5;
-    sphere.color.r = 0.74f; sphere.color.g = 0.25f; sphere.color.b = 0.74f;
+    sphere.color.r = r; sphere.color.g = g; sphere.color.b = b;
     sphere.color.a = 0.9f;
-    sphere.lifetime = rclcpp::Duration(0, 0);  // persist until deleted
+    sphere.lifetime = rclcpp::Duration(0, 0);
 
     // Text label above sphere
     visualization_msgs::msg::Marker text;
@@ -343,8 +326,8 @@ void OpiTrackerNode::publishMarkers(const rclcpp::Time & stamp)
     text.color.r = text.color.g = text.color.b = 0.16f;
     text.color.a = 1.0f;
     std::ostringstream ss;
-    ss << "OPI #" << id << "\n(n=" << hyp.count << ")";
-    text.text = ss.str();
+    ss << hyp.class_id << " #" << id << "\n(n=" << hyp.count << ")";
+    text.text    = ss.str();
     text.lifetime = rclcpp::Duration(0, 0);
 
     marker_array.markers.push_back(sphere);

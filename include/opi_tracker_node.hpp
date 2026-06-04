@@ -8,6 +8,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <crl_opi/msg/tracked_pose_array.hpp>
+#include <vision_msgs/msg/detection2_d_array.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
@@ -26,12 +27,13 @@ namespace opi_tracker
 // ── Internal hypothesis ───────────────────────────────────────────────────────
 struct OpiHypothesis
 {
-  uint32_t      id;
-  Eigen::Vector3d centroid;       // running mean of all assigned measurements [m]
-  uint32_t        count{0};       // number of measurements assigned so far
-  rclcpp::Time    last_seen;      // stamp of the most recently assigned measurement
+  uint32_t        id;
+  std::string     class_id;           // "adr", "drone", or "camo"
+  Eigen::Vector3d centroid;           // running mean of all assigned measurements [m]
+  uint32_t        count{0};           // number of measurements assigned so far
+  rclcpp::Time    last_seen;          // stamp of the most recently assigned measurement
   std::string     frame;
-  bool            visited{false}; // true once the robot has reached this OPI
+  bool            visited{false};     // true once the robot has reached this OPI
 };
 
 // ── Node ─────────────────────────────────────────────────────────────────────
@@ -42,10 +44,9 @@ public:
 
 private:
   // ── Parameters ────────────────────────────────────────────────────────────
-  double   cluster_radius_m_;     // merge radius: new meas within this → same cluster
-  uint32_t min_count_;            // minimum observations before hypothesis is reported
-  double   prune_timeout_s_;      // remove hypothesis if not seen for this long
-  double   opi_reached_distance_; // XY distance threshold for marking an OPI visited
+  double   cluster_radius_m_;
+  uint32_t min_count_;
+  double   opi_reached_distance_;
 
   std::string map_frame_;
   std::string tracked_topic_;
@@ -65,30 +66,24 @@ private:
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   // ── ROS I/O ───────────────────────────────────────────────────────────────
-  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr positions_sub_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr       odom_sub_;
-  rclcpp::Publisher<crl_opi::msg::TrackedPoseArray>::SharedPtr   hypotheses_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr    unvisited_pub_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr markers_pub_;
+  rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detections_sub_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr            odom_sub_;
+  rclcpp::Publisher<crl_opi::msg::TrackedPoseArray>::SharedPtr        hypotheses_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr         unvisited_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr  markers_pub_;
 
-  // Periodic publish timer
   rclcpp::TimerBase::SharedPtr publish_timer_;
 
   // ── Callbacks ─────────────────────────────────────────────────────────────
-  void positionsCallback(const geometry_msgs::msg::PoseArray::ConstSharedPtr & msg);
+  void detectionsCallback(const vision_msgs::msg::Detection2DArray::ConstSharedPtr & msg);
   void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr & msg);
   void publishTimerCallback();
 
   // ── Helpers ───────────────────────────────────────────────────────────────
+  void takePhoto(int id, const std::string & specifier);
 
-  void takePhoto(int id, std::string specifier);
-
-  // Find the nearest hypothesis to a measurement.
-  // Returns pointer (non-owning) or nullptr if none within cluster_radius_m_.
-  OpiHypothesis * findNearest(const Eigen::Vector3d & meas);
-
-  // Remove stale hypotheses.
-  void pruneHypotheses(const rclcpp::Time & now);
+  // Find the nearest hypothesis of the same class within cluster_radius_m_.
+  OpiHypothesis * findNearest(const Eigen::Vector3d & meas, const std::string & class_id);
 
   // Transform the latest robot pose into the requested frame.
   bool getRobotPoseInFrame(
@@ -98,6 +93,9 @@ private:
 
   // Build and publish a MarkerArray for RViz visualisation.
   void publishMarkers(const rclcpp::Time & stamp);
+
+  // Returns per-class sphere colour (r, g, b).
+  static std::tuple<float, float, float> classColor(const std::string & class_id);
 };
 
 }  // namespace opi_tracker
