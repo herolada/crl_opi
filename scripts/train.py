@@ -46,11 +46,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to the Ultralytics dataset YAML.",
     )
     parser.add_argument("--imgsz", type=int, default=416, help="Training and export image size.")
-    parser.add_argument("--epochs", type=int, default=100, help="Maximum training epochs.")
-    parser.add_argument("--batch", type=int, default=32, help="Batch size.")
+    parser.add_argument("--epochs", type=int, default=200, help="Maximum training epochs.")
+    parser.add_argument("--batch", type=int, default=128, help="Batch size.")
     parser.add_argument("--device", default="0", help='Training device, e.g. "0", "0,1", or "cpu".')
     parser.add_argument("--workers", type=int, default=8, help="Data loader workers.")
-    parser.add_argument("--patience", type=int, default=20, help="Early stopping patience.")
+    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience.")
     parser.add_argument(
         "--project",
         type=Path,
@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--preview-count",
         type=int,
-        default=4,
+        default=16,
         help="How many validation images to visualize.",
     )
     parser.add_argument(
@@ -326,7 +326,7 @@ class TrainingMonitor:
                 conf=self.args.conf,
                 iou=self.args.iou,
                 verbose=False,
-                device=self.args.device,
+                device=str(self.args.device).split(",")[0],
             )[0]
 
             preview = stack_preview(
@@ -361,8 +361,8 @@ def training_overrides(args: argparse.Namespace) -> dict:
         "exist_ok": True,
         "pretrained": True,
         "optimizer": "AdamW",
-        "lr0": 0.001,
-        "lrf": 0.01,
+        "lr0": 0.002,
+        "lrf": 0.02,
         "cos_lr": True,        # cosine LR schedule
         "weight_decay": 0.001,
         "hsv_h": 0.05,  # was 0.7 — camo class relies on hue; aggressive shifts destroy that signal
