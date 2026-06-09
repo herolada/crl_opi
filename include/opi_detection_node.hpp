@@ -72,6 +72,7 @@ private:
 
   cv::Mat preprocess(const cv::Mat & image, float & scale_x, float & scale_y) const;
   std::vector<Detection> postprocess(const std::vector<float> & output,
+                                     int num_anchors,
                                      float scale_x, float scale_y,
                                      int orig_w, int orig_h) const;
   std::string classLabel(int class_id) const;

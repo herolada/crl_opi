@@ -1,16 +1,16 @@
 """Launch the OPI detection, localization, and tracking pipeline."""
 from launch import LaunchDescription
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.actions import DeclareLaunchArgument
 from ament_index_python.packages import get_package_share_directory
-
+from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     declared_args = [
         DeclareLaunchArgument(
             "use_sim_time",
-            default_value="true",
+            default_value="false",
             description="simulation/bag or not",
         ),
         DeclareLaunchArgument(
@@ -20,10 +20,21 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "detection_hz",
-            default_value="0.0",
+            default_value="1.0",
             description="Maximum object detection frequency per subscribed camera topic; 0.0 processes every frame",
         ),
+        DeclareLaunchArgument(
+            "model",
+            default_value="best_dgx.onnx",
+            description="ONNX model file for object detection",
+        ),
     ]
+
+    model_path = PathJoinSubstitution([
+        FindPackageShare("crl_opi"),
+        "models",
+        LaunchConfiguration("model")
+    ])
 
     return LaunchDescription(
         declared_args +
@@ -33,21 +44,21 @@ def generate_launch_description():
             name="opi_detection_node",
             output="screen",
             parameters=[{
-                "model_path": get_package_share_directory("crl_opi") + "/models/best.onnx",
+                "model_path": model_path,
                 "camera_topics": ["camera/image_raw"],
                 "class_names": ["adr", "drone", "camo"],
                 "conf_threshold": 0.40,
                 "nms_threshold": 0.45,
-                "input_width": 640,
-                "input_height": 640,
+                "input_width": 416,
+                "input_height": 416,
                 "rotate_image_180": LaunchConfiguration("rotate_image_180"),
                 "detection_hz": LaunchConfiguration("detection_hz"),
                 "camera_info_topic": "camera/camera_info",
                 "output_topic": "opi/detections",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
-                ("camera/image_raw", "/luxonis/oak/rgb/image_raw"),
-                ("camera/camera_info", "/luxonis/oak/rgb/camera_info"),
+                ("camera/image_raw", "/basler_front/image_color"),
+                ("camera/camera_info", "/basler_front/camera_info"),
             ],
         ),
         Node(
@@ -69,7 +80,7 @@ def generate_launch_description():
                 "output_topic": "opi/positions_raw",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
-                ("camera/camera_info", "/luxonis/oak/rgb/camera_info"),
+                ("camera/camera_info", "/basler_front/camera_info"),
                 ("opi/detections", "/opi/detections"),
                 ("opi/positions_raw", "/opi/positions_raw"),
             ],
@@ -90,7 +101,7 @@ def generate_launch_description():
                 "goals_topic": "opi/goals",
                 "marker_topic": "opi/markers",
                 "odom_topic": "/liorf/mapping/baselink_odometry",
-                "image_topic": "/luxonis/oak/rgb/image_raw",
+                "image_topic": "/basler_front/image_color",
                 "img_save_path": "/home/robot/opi_images/",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
@@ -99,5 +110,6 @@ def generate_launch_description():
                 ("opi/tracked", "/opi/tracked"),
                 ("opi/markers", "/opi/markers"),
             ],
-        )]
+        )
+        ]
     )

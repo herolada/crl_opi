@@ -83,7 +83,7 @@ std::string OpiDetectionNode::classLabel(int class_id) const
 // ─────────────────────────────────────────────────────────────────────────────
 void OpiDetectionNode::loadModel()
 {
-  session_options_.SetIntraOpNumThreads(std::thread::hardware_concurrency());
+  session_options_.SetIntraOpNumThreads(1);
   session_options_.SetInterOpNumThreads(1);
   session_options_.SetExecutionMode(ExecutionMode::ORT_SEQUENTIAL);
   session_options_.EnableCpuMemArena();
@@ -137,10 +137,10 @@ cv::Mat OpiDetectionNode::preprocess(const cv::Mat & image,
 // Each column: [cx, cy, w, h, cls0_score, cls1_score, ...]
 std::vector<Detection> OpiDetectionNode::postprocess(
   const std::vector<float> & raw,
+  int num_anchors,
   float scale_x, float scale_y,
   int /*orig_w*/, int /*orig_h*/) const
 {
-  const int num_anchors  = 8400;  // standard YOLO at 640×640
   const int row_stride   = static_cast<int>(raw.size()) / num_anchors;
   const int num_classes  = row_stride - 4;
 
@@ -245,11 +245,17 @@ void OpiDetectionNode::imageCallback(
   const auto inference_end = std::chrono::steady_clock::now();
 
   float * raw_ptr  = output_tensors[0].GetTensorMutableData<float>();
+  auto    shape    = output_tensors[0].GetTensorTypeAndShapeInfo().GetShape();
   size_t  raw_size = output_tensors[0].GetTensorTypeAndShapeInfo().GetElementCount();
   std::vector<float> raw_output(raw_ptr, raw_ptr + raw_size);
 
+  // shape is [1, row_stride, num_anchors]; take the last dim
+  int num_anchors = (shape.size() >= 3 && shape[2] > 0)
+                    ? static_cast<int>(shape[2])
+                    : static_cast<int>(raw_size) / static_cast<int>(shape[1]);
+
   const auto postprocess_start = std::chrono::steady_clock::now();
-  auto detections = postprocess(raw_output, scale_x, scale_y, image.cols, image.rows);
+  auto detections = postprocess(raw_output, num_anchors, scale_x, scale_y, image.cols, image.rows);
   const auto postprocess_end = std::chrono::steady_clock::now();
 
   // Build and publish Detection2DArray
