@@ -8,6 +8,9 @@
 #include <opencv2/imgcodecs.hpp>
 #include <rclcpp/wait_for_message.hpp>
 
+#include <GeographicLib/Geocentric.hpp>
+#include <GeographicLib/UTMUPS.hpp>
+
 #include <sys/stat.h>
 #include <sys/types.h>
 #define MKDIR(path) mkdir(path, 0755)
@@ -33,7 +36,18 @@ OpiTrackerNode::OpiTrackerNode(const rclcpp::NodeOptions & options)
   std::string odom_topic  = declare_parameter<std::string>("odom_topic",    "/odom");
   image_topic_            = declare_parameter("image_topic",    "/luxonis/oak/rgb/image_raw");
   img_save_path_          = declare_parameter("img_save_path",  "~/opi_images/");
+  robot_frame_            = declare_parameter<std::string>("robot_frame", "os_sensor");
   MKDIR(img_save_path_.c_str());
+
+  // CSV path defaults to <img_save_path>/opi_log.csv
+  {
+    std::string default_csv = img_save_path_;
+    if (!default_csv.empty() &&
+        default_csv.back() != '/' && default_csv.back() != '\\')
+      default_csv += '/';
+    default_csv += "opi_log.csv";
+    csv_save_path_ = declare_parameter<std::string>("csv_save_path", default_csv);
+  }
 
   // ── TF ──────────────────────────────────────────────────────────────────
   tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -110,18 +124,40 @@ void OpiTrackerNode::detectionsCallback(
       hyp->last_seen = stamp;
     } else {
       OpiHypothesis new_hyp;
-      new_hyp.id        = next_id_++;
-      new_hyp.class_id  = class_id;
-      new_hyp.centroid  = meas;
-      new_hyp.count     = 1;
-      new_hyp.last_seen = stamp;
-      new_hyp.frame     = msg->header.frame_id;
+      new_hyp.id         = next_id_++;
+      new_hyp.class_id   = class_id;
+      new_hyp.centroid   = meas;
+      new_hyp.count      = 1;
+      new_hyp.first_seen = stamp;
+      new_hyp.last_seen  = stamp;
+      new_hyp.frame      = msg->header.frame_id;
+
+      // Record pose in robot frame at first detection
+      geometry_msgs::msg::PoseStamped ps_in, ps_out;
+      ps_in.header = msg->header;
+      ps_in.pose   = det.results[0].pose.pose;
+      try {
+        tf_buffer_->transform(ps_in, ps_out, robot_frame_, tf2::durationFromSec(0.1));
+        new_hyp.robot_pos = Eigen::Vector3d(
+          ps_out.pose.position.x, ps_out.pose.position.y, ps_out.pose.position.z);
+        new_hyp.robot_ori = Eigen::Quaterniond(
+          ps_out.pose.orientation.w, ps_out.pose.orientation.x,
+          ps_out.pose.orientation.y, ps_out.pose.orientation.z);
+        new_hyp.has_robot_frame_pose = true;
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_DEBUG(get_logger(),
+          "Could not get robot-frame pose for new OPI id=%u: %s", new_hyp.id, ex.what());
+      }
+
       hypotheses_[new_hyp.id] = new_hyp;
-      RCLCPP_INFO(get_logger(), "New OPI hypothesis id=%u class=%s at [%.2f, %.2f, %.2f]",
-                  new_hyp.id, class_id.c_str(), meas.x(), meas.y(), meas.z());
-      takePhoto(static_cast<int>(new_hyp.id), "new");
       hyp = &hypotheses_.at(new_hyp.id);
+
+      RCLCPP_INFO(get_logger(), "New OPI hypothesis id=%u class=%s at [%.2f, %.2f, %.2f]",
+                  hyp->id, class_id.c_str(), meas.x(), meas.y(), meas.z());
+      hyp->image_filename = takePhoto(static_cast<int>(hyp->id), "new");
     }
+
+    updateEcefAndUtm(*hyp);
 
     if (can_check_visited && !hyp->visited) {
       const double dx = hyp->centroid.x() - robot_pose.pose.position.x;
@@ -133,6 +169,8 @@ void OpiTrackerNode::detectionsCallback(
       }
     }
   }
+
+  writeCsv();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -207,7 +245,7 @@ void OpiTrackerNode::publishTimerCallback()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-void OpiTrackerNode::takePhoto(int id, const std::string & specifier)
+std::string OpiTrackerNode::takePhoto(int id, const std::string & specifier)
 {
   RCLCPP_INFO(get_logger(), "Trying to take a photo of OPI %d.", id);
   sensor_msgs::msg::Image img_msg;
@@ -217,7 +255,7 @@ void OpiTrackerNode::takePhoto(int id, const std::string & specifier)
     RCLCPP_WARN(get_logger(),
       "Failed to take photo of the OPI! wait_for_msg did not receive a msg in %ld s",
       timeout.count());
-    return;
+    return "";
   }
 
   cv_bridge::CvImageConstPtr cv_img =
@@ -225,7 +263,7 @@ void OpiTrackerNode::takePhoto(int id, const std::string & specifier)
 
   if (cv_img->image.empty()) {
     RCLCPP_ERROR(get_logger(), "The image is empty.");
-    return;
+    return "";
   }
 
   std::string separator =
@@ -239,6 +277,79 @@ void OpiTrackerNode::takePhoto(int id, const std::string & specifier)
     img_save_path_ + separator + "OPI_" + std::to_string(id) + "_" + specifier + ".png";
   cv::imwrite(save_path, cv_img->image);
   RCLCPP_INFO(get_logger(), "Saved photo of OPI %d to %s", id, save_path.c_str());
+  return save_path;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void OpiTrackerNode::updateEcefAndUtm(OpiHypothesis & hyp)
+{
+  try {
+    geometry_msgs::msg::PointStamped pt_in, pt_out;
+    pt_in.header.frame_id = hyp.frame;
+    pt_in.header.stamp    = hyp.last_seen;
+    pt_in.point.x         = hyp.centroid.x();
+    pt_in.point.y         = hyp.centroid.y();
+    pt_in.point.z         = hyp.centroid.z();
+    tf_buffer_->transform(pt_in, pt_out, "earth", tf2::durationFromSec(0.1));
+    hyp.ecef_pos = Eigen::Vector3d(pt_out.point.x, pt_out.point.y, pt_out.point.z);
+
+    double lat, lon, alt;
+    GeographicLib::Geocentric::WGS84().Reverse(
+      hyp.ecef_pos.x(), hyp.ecef_pos.y(), hyp.ecef_pos.z(), lat, lon, alt);
+    GeographicLib::UTMUPS::Forward(lat, lon,
+      hyp.utm_zone, hyp.utm_northp, hyp.utm_easting, hyp.utm_northing);
+    hyp.utm_alt = alt;
+    hyp.has_ecef = true;
+  } catch (const std::exception & ex) {
+    RCLCPP_DEBUG(get_logger(),
+      "ECEF/UTM update failed for id=%u: %s", hyp.id, ex.what());
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void OpiTrackerNode::writeCsv()
+{
+  std::ofstream f(csv_save_path_, std::ios::trunc);
+  if (!f.is_open()) {
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+      "Cannot write OPI CSV to '%s'", csv_save_path_.c_str());
+    return;
+  }
+
+  f << "id,class_id,timestamp_first_s,"
+       "robot_x,robot_y,robot_z,robot_qx,robot_qy,robot_qz,robot_qw,"
+       "ecef_x,ecef_y,ecef_z,"
+       "utm_zone,utm_northp,utm_easting,utm_northing,utm_alt,"
+       "image_filename\n";
+  f << std::fixed;
+
+  for (const auto & [id, hyp] : hypotheses_) {
+    f << id << ","
+      << hyp.class_id << ","
+      << std::setprecision(3) << hyp.first_seen.seconds() << ",";
+
+    if (hyp.has_robot_frame_pose) {
+      f << std::setprecision(4)
+        << hyp.robot_pos.x() << "," << hyp.robot_pos.y() << "," << hyp.robot_pos.z() << ","
+        << hyp.robot_ori.x() << "," << hyp.robot_ori.y() << "," << hyp.robot_ori.z() << ","
+        << hyp.robot_ori.w();
+    } else {
+      f << ",,,,,,";   // 6 commas for 7 empty fields (rx,ry,rz,qx,qy,qz,qw)
+    }
+    f << ",";
+
+    if (hyp.has_ecef) {
+      f << std::setprecision(3)
+        << hyp.ecef_pos.x() << "," << hyp.ecef_pos.y() << "," << hyp.ecef_pos.z() << ","
+        << hyp.utm_zone << "," << (hyp.utm_northp ? "N" : "S") << ","
+        << std::setprecision(2)
+        << hyp.utm_easting << "," << hyp.utm_northing << ","
+        << std::setprecision(3) << hyp.utm_alt;
+    } else {
+      f << ",,,,,,,";   // 7 commas for 8 empty fields (ex,ey,ez,zone,northp,ue,un,ua)
+    }
+    f << "," << hyp.image_filename << "\n";
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

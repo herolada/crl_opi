@@ -21,6 +21,7 @@ find_package(OpenCV REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(GeographicLib REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TrackedPose.msg"
@@ -96,6 +97,7 @@ add_executable(opi_tracker_node src/opi_tracker_node.cpp)
 target_include_directories(opi_tracker_node PRIVATE
   include
   ${EIGEN3_INCLUDE_DIRS}
+  ${GeographicLib_INCLUDE_DIRS}
 )
  
 ament_target_dependencies(opi_tracker_node
@@ -109,6 +111,10 @@ ament_target_dependencies(opi_tracker_node
   tf2_geometry_msgs
   visualization_msgs
   std_msgs
+)
+
+target_link_libraries(opi_tracker_node
+  ${GeographicLib_LIBRARIES}
 )
 
 rosidl_target_interfaces(opi_tracker_node

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <fstream>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <string>
@@ -9,6 +11,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <crl_opi/msg/tracked_pose_array.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
+#include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
@@ -31,9 +34,26 @@ struct OpiHypothesis
   std::string     class_id;           // "adr", "drone", or "camo"
   Eigen::Vector3d centroid;           // running mean of all assigned measurements [m]
   uint32_t        count{0};           // number of measurements assigned so far
+  rclcpp::Time    first_seen;         // stamp of the first assigned measurement
   rclcpp::Time    last_seen;          // stamp of the most recently assigned measurement
   std::string     frame;
   bool            visited{false};     // true once the robot has reached this OPI
+
+  // Pose in robot frame at first detection
+  Eigen::Vector3d    robot_pos  = Eigen::Vector3d::Zero();
+  Eigen::Quaterniond robot_ori  = Eigen::Quaterniond::Identity();
+  bool               has_robot_frame_pose{false};
+
+  // ECEF position (updated each detection via earth TF), and derived UTM
+  Eigen::Vector3d ecef_pos   = Eigen::Vector3d::Zero();
+  double          utm_easting{0.0};
+  double          utm_northing{0.0};
+  double          utm_alt{0.0};
+  int             utm_zone{0};
+  bool            utm_northp{true};
+  bool            has_ecef{false};
+
+  std::string     image_filename;     // absolute path written by takePhoto, empty if failed
 };
 
 // ── Node ─────────────────────────────────────────────────────────────────────
@@ -54,6 +74,8 @@ private:
   std::string marker_topic_;
   std::string image_topic_;
   std::string img_save_path_;
+  std::string robot_frame_;
+  std::string csv_save_path_;
 
   // ── State ─────────────────────────────────────────────────────────────────
   std::map<uint32_t, OpiHypothesis> hypotheses_;
@@ -80,7 +102,8 @@ private:
   void publishTimerCallback();
 
   // ── Helpers ───────────────────────────────────────────────────────────────
-  void takePhoto(int id, const std::string & specifier);
+  // Saves an image and returns the absolute path written, or "" on failure.
+  std::string takePhoto(int id, const std::string & specifier);
 
   // Find the nearest hypothesis of the same class within cluster_radius_m_.
   OpiHypothesis * findNearest(const Eigen::Vector3d & meas, const std::string & class_id);
@@ -90,6 +113,12 @@ private:
     const std::string & target_frame,
     const rclcpp::Time & stamp,
     geometry_msgs::msg::PoseStamped & robot_pose) const;
+
+  // Transform centroid from hyp.frame to "earth" (ECEF) and derive UTM; updates hyp in place.
+  void updateEcefAndUtm(OpiHypothesis & hyp);
+
+  // Rewrite the CSV file with all current hypotheses.
+  void writeCsv();
 
   // Build and publish a MarkerArray for RViz visualisation.
   void publishMarkers(const rclcpp::Time & stamp);
