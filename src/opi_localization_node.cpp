@@ -176,7 +176,7 @@ bool OpiLocalizationNode::transformToMap(
   geometry_msgs::msg::PoseStamped pose_map;
   try {
     tf_buffer_->transform(pose_camera, pose_map, map_frame_,
-                          tf2::durationFromSec(0.1));
+                          tf2::durationFromSec(1.0));
   } catch (const tf2::TransformException & ex) {
     RCLCPP_WARN(get_logger(), "TF transform failed: %s", ex.what());
     return false;

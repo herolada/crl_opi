@@ -57,7 +57,7 @@ def generate_launch_description():
                 "output_topic": "opi/detections",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
-                ("camera/image_raw", "/basler_front/image_color"),
+                ("camera/image_raw", "/basler_front/image_raw"),
                 ("camera/camera_info", "/basler_front/camera_info"),
             ],
         ),
@@ -73,7 +73,7 @@ def generate_launch_description():
                 "drone_height_m": 0.50,
                 "camo_width_m":   0.50,
                 "camo_height_m":  1.80,
-                "map_frame": "local_odom",
+                "map_frame": "map",
                 "camera_frame": "oak_rgb_camera_optical_frame",
                 "camera_info_topic": "camera/camera_info",
                 "input_topic": "opi/detections",
@@ -93,15 +93,15 @@ def generate_launch_description():
             parameters=[{
                 "opi_reached_distance": 3.0,
                 "cluster_radius_m": 5.0,
-                "min_count": 5,
-                "map_frame": "local_odom",
+                "min_count": 1,
+                "map_frame": "map",
                 "publish_hz": 2.0,
                 "input_topic": "opi/positions_raw",
                 "tracked_topic": "opi/tracked",
                 "goals_topic": "opi/goals",
                 "marker_topic": "opi/markers",
                 "odom_topic": "/liorf/mapping/baselink_odometry",
-                "image_topic": "/basler_front/image_color",
+                "image_topic": "/basler_front/image_raw",
                 "img_save_path": "/home/robot/opi_images/",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
@@ -110,6 +110,24 @@ def generate_launch_description():
                 ("opi/tracked", "/opi/tracked"),
                 ("opi/markers", "/opi/markers"),
             ],
-        )
+        ),
+        # ros2 run tf2_ros static_transform_publisher --frame-id os_sensor --child-frame-id pylon_camera --x 0 --y 0 --z 0 --roll 3.14 --pitch -1.57 --yaw 0
+        # TODO BUG: this makes the z coordinate be upside down for the localized OPIs
+        # Node(
+        #     package="tf2_ros",
+        #     executable="static_transform_publisher",
+        #     name="fake_pylon_camera_tf",
+        #     output="screen",
+        #     arguments=[
+        #         "--frame-id", "os_sensor",
+        #         "--child-frame-id", "pylon_camera",
+        #         "--x", "0",
+        #         "--y", "0",
+        #         "--z", "0",
+        #         "--roll", "3.14",
+        #         "--pitch", "-1.57",
+        #         "--yaw", "0",
+        #     ],
+        # )
         ]
     )
