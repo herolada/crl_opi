@@ -181,7 +181,10 @@ bool OpiLocalizationNode::transformToMap(
     RCLCPP_WARN(get_logger(), "TF transform failed: %s", ex.what());
     return false;
   }
-
+  pose_map.pose.orientation.x = 0.0;
+  pose_map.pose.orientation.y = 0.0;
+  pose_map.pose.orientation.z = 0.0;
+  pose_map.pose.orientation.w = 1.0;
   pose_in_map = pose_map.pose;
   return true;
 }
@@ -198,7 +201,8 @@ void OpiLocalizationNode::detectionsCallback(
   if (msg->detections.empty()) return;
 
   vision_msgs::msg::Detection2DArray out_array;
-  out_array.header = msg->header;
+  out_array.header.stamp = msg->header.stamp;
+  out_array.header.frame_id = map_frame_;
 
   for (const auto & det : msg->detections) {
     if (det.results.empty()) continue;
@@ -211,6 +215,7 @@ void OpiLocalizationNode::detectionsCallback(
 
     // Republish this detection with the 3D pose filled in
     vision_msgs::msg::Detection2D out_det = det;
+    out_det.header.frame_id = map_frame_;
     out_det.results[0].pose.pose = pose_map;
     out_array.detections.push_back(out_det);
   }

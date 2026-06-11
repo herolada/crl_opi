@@ -1,5 +1,6 @@
 #include "opi_tracker_node.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <sstream>
 #include <tuple>
@@ -122,6 +123,7 @@ void OpiTrackerNode::detectionsCallback(
       ++hyp->count;
       hyp->centroid += (meas - hyp->centroid) / static_cast<double>(hyp->count);
       hyp->last_seen = stamp;
+      updateEcefAndUtm(*hyp);
     } else {
       OpiHypothesis new_hyp;
       new_hyp.id         = next_id_++;
@@ -154,10 +156,9 @@ void OpiTrackerNode::detectionsCallback(
 
       RCLCPP_INFO(get_logger(), "New OPI hypothesis id=%u class=%s at [%.2f, %.2f, %.2f]",
                   hyp->id, class_id.c_str(), meas.x(), meas.y(), meas.z());
-      hyp->image_filename = takePhoto(static_cast<int>(hyp->id), "new", true);
+      updateEcefAndUtm(*hyp);
+      hyp->image_filename = takePhoto(*hyp, true);
     }
-
-    updateEcefAndUtm(*hyp);
 
     if (can_check_visited && !hyp->visited) {
       const double dx = hyp->centroid.x() - robot_pose.pose.position.x;
@@ -200,11 +201,11 @@ void OpiTrackerNode::odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr 
         RCLCPP_INFO(get_logger(),
           "Marked OPI hypothesis id=%u class=%s visited at XY distance %.2f m",
           hyp.id, hyp.class_id.c_str(), distance_xy);
-        takePhoto(static_cast<int>(hyp.id), "closeup", true);
+        // takePhoto(hyp, true);
       } else {
-        RCLCPP_INFO(get_logger(),
-          "OPI too far id=%u class=%s at XY distance %.2f m",
-          hyp.id, hyp.class_id.c_str(), distance_xy);
+        // RCLCPP_INFO(get_logger(),
+        //   "OPI too far id=%u class=%s at XY distance %.2f m",
+        //   hyp.id, hyp.class_id.c_str(), distance_xy);
       }
     }
   }
@@ -245,9 +246,9 @@ void OpiTrackerNode::publishTimerCallback()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-std::string OpiTrackerNode::takePhoto(int id, const std::string & specifier, bool flip = false)
+std::string OpiTrackerNode::takePhoto(const OpiHypothesis & hyp, bool flip)
 {
-  RCLCPP_INFO(get_logger(), "Trying to take a photo of OPI %d.", id);
+  RCLCPP_INFO(get_logger(), "Trying to take a photo of OPI %u.", hyp.id);
   sensor_msgs::msg::Image img_msg;
   auto timeout = std::chrono::seconds(1);
   bool received_msg = rclcpp::wait_for_message(img_msg, shared_from_this(), image_topic_, timeout);
@@ -270,16 +271,30 @@ std::string OpiTrackerNode::takePhoto(int id, const std::string & specifier, boo
     cv::flip(image, image, -1);
   }
 
+  // Build filename: <unix_seconds>_<zone><N|S><easting.2f>_<northing.2f>.png
+  // Fall back to OPI id when UTM is not yet available.
+  auto unix_s = std::chrono::duration_cast<std::chrono::seconds>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+
+  std::ostringstream stem;
+  stem << unix_s;
+  if (hyp.has_ecef) {
+    stem << "_" << hyp.utm_zone << (hyp.utm_northp ? "N" : "S")
+         << std::fixed << std::setprecision(2) << hyp.utm_easting
+         << "_" << hyp.utm_northing;
+  } else {
+    stem << "_id" << hyp.id;
+  }
+
   std::string separator =
     (!img_save_path_.empty() &&
     img_save_path_.back() != '/' &&
     img_save_path_.back() != '\\')
     ? "/"
     : "";
-  std::string save_path =
-    img_save_path_ + separator + "OPI_" + std::to_string(id) + "_" + specifier + ".png";
+  std::string save_path = img_save_path_ + separator + stem.str() + ".png";
   cv::imwrite(save_path, image);
-  RCLCPP_INFO(get_logger(), "Saved photo of OPI %d to %s", id, save_path.c_str());
+  RCLCPP_INFO(get_logger(), "Saved photo of OPI %u to %s", hyp.id, save_path.c_str());
   return save_path;
 }
 
