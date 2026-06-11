@@ -103,8 +103,8 @@ private:
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   // Saves an image and returns the absolute path written, or "" on failure.
-  std::string takePhoto(int id, const std::string & specifier);
-
+  std::string takePhoto(int id, const std::string & specifier, bool flip = false);
+  
   // Find the nearest hypothesis of the same class within cluster_radius_m_.
   OpiHypothesis * findNearest(const Eigen::Vector3d & meas, const std::string & class_id);
 

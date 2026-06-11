@@ -154,7 +154,7 @@ void OpiTrackerNode::detectionsCallback(
 
       RCLCPP_INFO(get_logger(), "New OPI hypothesis id=%u class=%s at [%.2f, %.2f, %.2f]",
                   hyp->id, class_id.c_str(), meas.x(), meas.y(), meas.z());
-      hyp->image_filename = takePhoto(static_cast<int>(hyp->id), "new");
+      hyp->image_filename = takePhoto(static_cast<int>(hyp->id), "new", true);
     }
 
     updateEcefAndUtm(*hyp);
@@ -200,7 +200,7 @@ void OpiTrackerNode::odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr 
         RCLCPP_INFO(get_logger(),
           "Marked OPI hypothesis id=%u class=%s visited at XY distance %.2f m",
           hyp.id, hyp.class_id.c_str(), distance_xy);
-        takePhoto(static_cast<int>(hyp.id), "closeup");
+        takePhoto(static_cast<int>(hyp.id), "closeup", true);
       } else {
         RCLCPP_INFO(get_logger(),
           "OPI too far id=%u class=%s at XY distance %.2f m",
@@ -245,7 +245,7 @@ void OpiTrackerNode::publishTimerCallback()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-std::string OpiTrackerNode::takePhoto(int id, const std::string & specifier)
+std::string OpiTrackerNode::takePhoto(int id, const std::string & specifier, bool flip = false)
 {
   RCLCPP_INFO(get_logger(), "Trying to take a photo of OPI %d.", id);
   sensor_msgs::msg::Image img_msg;
@@ -260,22 +260,25 @@ std::string OpiTrackerNode::takePhoto(int id, const std::string & specifier)
 
   cv_bridge::CvImageConstPtr cv_img =
     cv_bridge::toCvShare(std::make_shared<sensor_msgs::msg::Image>(img_msg), img_msg.encoding);
-
   if (cv_img->image.empty()) {
     RCLCPP_ERROR(get_logger(), "The image is empty.");
     return "";
   }
 
+  cv::Mat image = cv_img->image;
+  if (flip) {
+    cv::flip(image, image, -1);
+  }
+
   std::string separator =
     (!img_save_path_.empty() &&
-     img_save_path_.back() != '/' &&
-     img_save_path_.back() != '\\')
-        ? "/"
-        : "";
-
+    img_save_path_.back() != '/' &&
+    img_save_path_.back() != '\\')
+    ? "/"
+    : "";
   std::string save_path =
     img_save_path_ + separator + "OPI_" + std::to_string(id) + "_" + specifier + ".png";
-  cv::imwrite(save_path, cv_img->image);
+  cv::imwrite(save_path, image);
   RCLCPP_INFO(get_logger(), "Saved photo of OPI %d to %s", id, save_path.c_str());
   return save_path;
 }
