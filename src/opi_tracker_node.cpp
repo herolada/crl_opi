@@ -7,6 +7,7 @@
 
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <rclcpp/wait_for_message.hpp>
 
 #include <GeographicLib/Geocentric.hpp>
@@ -49,6 +50,11 @@ OpiTrackerNode::OpiTrackerNode(const rclcpp::NodeOptions & options)
     default_csv += "opi_log.csv";
     csv_save_path_ = declare_parameter<std::string>("csv_save_path", default_csv);
   }
+
+  // Write an (empty, header-only) CSV up front so the file always exists even
+  // when no OPIs are detected. Post-processing then never trips over a missing
+  // opi_log.csv. It gets overwritten with real data on the first detection.
+  writeCsv();
 
   // ── TF ──────────────────────────────────────────────────────────────────
   tf_buffer_   = std::make_shared<tf2_ros::Buffer>(get_clock());
@@ -266,9 +272,36 @@ std::string OpiTrackerNode::takePhoto(const OpiHypothesis & hyp, bool flip)
     return "";
   }
 
-  cv::Mat image = cv_img->image;
+  cv::Mat image = cv_img->image.clone();
   if (flip) {
     cv::flip(image, image, -1);
+  }
+
+  // Overlay class label, timestamp and UTM coordinates onto the image.
+  {
+    std::ostringstream ts_text, coord_text;
+    ts_text << "t=" << hyp.last_seen.seconds() << " s";
+    if (hyp.has_ecef) {
+      coord_text << std::fixed << "UTM " << hyp.utm_zone << (hyp.utm_northp ? "N" : "S")
+                 << ' ' << std::setprecision(2)
+                 << "E" << hyp.utm_easting << " N" << hyp.utm_northing;
+    } else {
+      coord_text << "UTM n/a";
+    }
+
+    const std::vector<std::string> lines = {hyp.class_id, ts_text.str(), coord_text.str()};
+    const int font = cv::FONT_HERSHEY_SIMPLEX;
+    const double scale = 0.7;
+    const int thickness = 2;
+    int y = 30;
+    for (const auto & text : lines) {
+      // Draw a dark outline first for readability, then the bright text.
+      cv::putText(image, text, cv::Point(10, y), font, scale,
+                  cv::Scalar(0, 0, 0), thickness + 2, cv::LINE_AA);
+      cv::putText(image, text, cv::Point(10, y), font, scale,
+                  cv::Scalar(0, 255, 0), thickness, cv::LINE_AA);
+      y += 30;
+    }
   }
 
   // Build filename: <unix_seconds>_<zone><N|S><easting.2f>_<northing.2f>.png
