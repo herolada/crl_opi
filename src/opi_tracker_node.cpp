@@ -328,6 +328,22 @@ std::string OpiTrackerNode::takePhoto(const OpiHypothesis & hyp, bool flip)
   std::string save_path = img_save_path_ + separator + stem.str() + ".png";
   cv::imwrite(save_path, image);
   RCLCPP_INFO(get_logger(), "Saved photo of OPI %u to %s", hyp.id, save_path.c_str());
+
+  // Save a downscaled preview (320p, i.e. 320 px tall, aspect ratio preserved).
+  {
+    const int preview_height = 320;
+    if (image.rows > 0) {
+      double scale_factor = static_cast<double>(preview_height) / image.rows;
+      int preview_width = std::max(1, static_cast<int>(std::lround(image.cols * scale_factor)));
+      cv::Mat preview;
+      cv::resize(image, preview, cv::Size(preview_width, preview_height), 0, 0, cv::INTER_AREA);
+
+      std::string preview_path = img_save_path_ + separator + stem.str() + "_preview.png";
+      cv::imwrite(preview_path, preview);
+      RCLCPP_INFO(get_logger(), "Saved preview of OPI %u to %s", hyp.id, preview_path.c_str());
+    }
+  }
+
   return save_path;
 }
 

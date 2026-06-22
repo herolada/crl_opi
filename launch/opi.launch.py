@@ -47,7 +47,7 @@ def generate_launch_description():
                 "model_path": model_path,
                 "camera_topics": ["camera/image_raw"],
                 "class_names": ["adr", "drone", "camo"],
-                "conf_threshold": 0.40,
+                "conf_threshold": 0.55,
                 "nms_threshold": 0.45,
                 "input_width": 416,
                 "input_height": 416,
@@ -103,7 +103,7 @@ def generate_launch_description():
                 "marker_topic": "opi/markers",
                 "odom_topic": "/liorf/mapping/baselink_odometry",
                 "image_topic": "/basler_front/image_color",
-                "img_save_path": "/home/robot/repos/navstack_software/crl_elrob_output/",
+                "img_save_path": "/home/robot/repos/navstack_software/crl_elrob_output/output",
                 "use_sim_time": LaunchConfiguration("use_sim_time")}],
             remappings=[
                 ("opi/positions_raw", "/opi/positions_raw"),
